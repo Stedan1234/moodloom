@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* Deliberately plain, unbranded styling — real visual identity is Phase 4
+   (Brand & Identity) work, which comes after this core loop is validated
+   with real usage. This is functional, not final. */
+body {
+  margin: 0;
+}

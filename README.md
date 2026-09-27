@@ -12,10 +12,11 @@ Full positioning, competitive landscape, and MVP scope live in the attached Clau
 
 - **`backend/`** — Node.js + Express + PostgreSQL API. Projects, board items (references), workspace notes, and anonymous-by-default auth with optional email claim.
 - **`extension/`** — Chrome extension (Manifest V3) that captures the active tab into a Moodloom project in one click. This is the v1 capture mechanism (full native OS share-sheet integration is a deferred v2 item — see `mvp-scope.md`).
+- **`frontend/`** — React + Vite + Tailwind web app. Project list, the fixed-grid reference board (native YouTube/image rendering), and the minimal side-by-side workspace notes area.
 
 ## Status
 
-MVP build in progress. Backend foundation and capture prototype are built and verified end-to-end. Next: board view (frontend) and minimal workspace area.
+MVP build in progress. Backend foundation, capture extension, and the frontend (board view + workspace) are all built and verified end-to-end, including a real browser walkthrough (create project → capture references → confirm native rendering → reload and confirm persistence). Next: polish the capture flow, then dogfood on a real project.
 
 ## Local setup
 
@@ -25,6 +26,14 @@ cd backend
 cp .env.example .env   # fill in DATABASE_URL and JWT_SECRET
 npm install
 npm run migrate
+npm run dev
+```
+
+**Frontend:**
+```bash
+cd frontend
+cp .env.example .env   # VITE_API_BASE, defaults to http://localhost:3001
+npm install
 npm run dev
 ```
 
