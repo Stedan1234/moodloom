@@ -1,7 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import BoardItem from './BoardItem';
 import Workspace from './Workspace';
+
+// How often to poll for new items while a project is open. This is what
+// makes a capture from the extension show up without a manual refresh —
+// there's no push/websocket layer yet, so this is a simple, safe stand-in:
+// it only re-fetches the read-only board list, never touches the workspace
+// notes (separate component, separate autosave), and there's no drag-to-
+// reorder yet for a mid-poll update to disrupt.
+const POLL_INTERVAL_MS = 4000;
 
 // This is the actual core loop, in one screen: the fixed-grid reference board
 // sitting side-by-side with the workspace, so opening a project means seeing
@@ -13,18 +21,44 @@ export default function ProjectView({ projectId, onBack }) {
   const [manualUrl, setManualUrl] = useState('');
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState(null);
+  // Tracks items the user just deleted but whose DELETE request hasn't been
+  // confirmed by the server yet — without this, a poll landing in that gap
+  // would make a just-deleted item flicker back before the request completes.
+  const pendingDeleteIds = useRef(new Set());
 
   async function refreshItems() {
     try {
-      setItems(await api.listItems(projectId));
+      const fresh = await api.listItems(projectId);
+      setItems(fresh.filter((item) => !pendingDeleteIds.current.has(item.id)));
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  // Silent version for the polling loop: no error banner (a transient network
+  // blip shouldn't interrupt someone mid-work), and only updates state if the
+  // list actually changed, so a capture that just landed doesn't cause the
+  // whole grid (including images already loaded) to visibly re-render.
+  async function pollItems() {
+    try {
+      const fresh = await api.listItems(projectId);
+      const filtered = fresh.filter((item) => !pendingDeleteIds.current.has(item.id));
+      setItems((prev) => {
+        if (prev && JSON.stringify(prev) === JSON.stringify(filtered)) return prev;
+        return filtered;
+      });
+    } catch {
+      // Stay quiet — this is a background convenience refresh, not a
+      // user-initiated action, so it shouldn't surface errors.
     }
   }
 
   useEffect(() => {
     api.getProject(projectId).then(setProject).catch((err) => setError(err.message));
     refreshItems();
+
+    const interval = setInterval(pollItems, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -52,12 +86,17 @@ export default function ProjectView({ projectId, onBack }) {
   }
 
   async function handleDelete(itemId) {
+    pendingDeleteIds.current.add(itemId);
     setItems((prev) => prev.filter((i) => i.id !== itemId));
     try {
       await api.deleteItem(projectId, itemId);
+      pendingDeleteIds.current.delete(itemId);
     } catch (err) {
+      // Clear the guard BEFORE refreshing, so the rollback actually gets to
+      // bring the item back instead of the guard filtering it right back out.
+      pendingDeleteIds.current.delete(itemId);
       setError(err.message);
-      refreshItems(); // roll back the optimistic removal on failure
+      await refreshItems();
     }
   }
 
