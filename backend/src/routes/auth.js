@@ -51,6 +51,20 @@ authRouter.post('/claim', requireAuth, authLimiter, async (req, res) => {
 });
 
 /**
+ * GET /auth/me
+ * Tells the caller whether the CURRENT account has been claimed (has an
+ * email on file) or is still a bare anonymous account. Used by the web app
+ * to decide whether to show the "back up your account" prompt — an
+ * anonymous account has no recovery path at all if its token is ever lost
+ * (browser storage cleared, JWT_SECRET rotated, etc.), so this is a real
+ * data-loss risk, not just a nice-to-have reminder.
+ */
+authRouter.get('/me', requireAuth, async (req, res) => {
+  const result = await pool.query('SELECT email FROM users WHERE id = $1', [req.userId]);
+  res.json({ email: result.rows[0]?.email || null });
+});
+
+/**
  * POST /auth/login
  * Recovers an existing account (one that has already been claimed with email/password)
  * from a new browser/device.

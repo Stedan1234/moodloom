@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import ConnectExtension from './ConnectExtension';
+import SaveAccount from './SaveAccount';
 
 export default function ProjectList({ onOpenProject }) {
   const [projects, setProjects] = useState(null); // null = loading
@@ -40,6 +41,8 @@ export default function ProjectList({ onOpenProject }) {
     <div className="max-w-2xl mx-auto p-8">
       <h1 className="text-2xl font-semibold mb-1">Moodloom</h1>
       <p className="text-gray-500 mb-4">Your projects</p>
+
+      <SaveAccount />
 
       <div className="mb-6">
         <ConnectExtension />

@@ -25,11 +25,35 @@ async function apiFetch(path, options = {}) {
       ...(options.headers || {}),
     },
   });
+  if (res.status === 401) {
+    // The stored token no longer verifies (e.g. a JWT_SECRET rotation, or a
+    // stale value from an old install). Previously this just showed "Invalid
+    // or expired token" forever with no way forward. Clearing it here means
+    // the NEXT call gets a fresh anonymous token automatically — the same
+    // self-healing behavior the extension already had.
+    localStorage.removeItem(TOKEN_KEY);
+    throw new Error('Your session needed to be refreshed — please try that again.');
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Request failed (${res.status})`);
   }
   if (res.status === 204) return null;
+  return res.json();
+}
+
+async function rawFetch(path, options = {}) {
+  // For calls that must NOT attach (or create) the current token, namely
+  // /auth/login — logging in should never auto-provision an anonymous
+  // account first, it should go straight to the real account.
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed (${res.status})`);
+  }
   return res.json();
 }
 
@@ -61,4 +85,24 @@ export const api = {
   // Generates a short-lived code the browser extension can redeem so it logs
   // into this SAME account, instead of silently creating its own separate one.
   getPairingCode: () => apiFetch('/auth/pairing-code', { method: 'POST' }),
+
+  // Whether the CURRENT account has an email on file. An anonymous account
+  // with no email has no recovery path at all if its token is ever lost.
+  getMe: () => apiFetch('/auth/me'),
+
+  // Attaches an email + password to the current (anonymous) account so it
+  // can survive a lost/cleared token or be recovered on another device.
+  claimAccount: (email, password) =>
+    apiFetch('/auth/claim', { method: 'POST', body: JSON.stringify({ email, password }) }),
+
+  // Recovers a previously-claimed account on this browser — deliberately
+  // bypasses the current token entirely rather than trying to attach to it.
+  login: async (email, password) => {
+    const data = await rawFetch('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+    localStorage.setItem(TOKEN_KEY, data.token);
+    return data;
+  },
 };
