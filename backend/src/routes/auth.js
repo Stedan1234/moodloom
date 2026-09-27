@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { pool } from '../db/pool.js';
 import { signToken, requireAuth } from '../middleware/auth.js';
+import { authLimiter, pairLimiter } from '../middleware/rateLimit.js';
 
 export const authRouter = Router();
 
@@ -12,7 +13,7 @@ export const authRouter = Router();
  * This is the default entry point: opening the extension or app for the first time
  * with no account should "just work" with zero friction.
  */
-authRouter.post('/anonymous', async (req, res) => {
+authRouter.post('/anonymous', authLimiter, async (req, res) => {
   const result = await pool.query(
     'INSERT INTO users DEFAULT VALUES RETURNING id, anon_token'
   );
@@ -26,7 +27,7 @@ authRouter.post('/anonymous', async (req, res) => {
  * Attaches an email + password to the CURRENT anonymous account, so it can be
  * recovered later from a different browser/device. Requires an existing valid token.
  */
-authRouter.post('/claim', requireAuth, async (req, res) => {
+authRouter.post('/claim', requireAuth, authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'email and password are required' });
@@ -54,7 +55,7 @@ authRouter.post('/claim', requireAuth, async (req, res) => {
  * Recovers an existing account (one that has already been claimed with email/password)
  * from a new browser/device.
  */
-authRouter.post('/login', async (req, res) => {
+authRouter.post('/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'email and password are required' });
@@ -104,7 +105,7 @@ function generateCode() {
  * app silently create two separate anonymous accounts and never see each
  * other's data.
  */
-authRouter.post('/pairing-code', requireAuth, async (req, res) => {
+authRouter.post('/pairing-code', requireAuth, authLimiter, async (req, res) => {
   // Clear out this user's old unused codes first so there's never more than
   // one live code per account lying around.
   await pool.query(
@@ -130,7 +131,7 @@ authRouter.post('/pairing-code', requireAuth, async (req, res) => {
  * the code is deleted the moment it's redeemed, whether or not it succeeds
  * against an expired row, so it can't be replayed.
  */
-authRouter.post('/pair', async (req, res) => {
+authRouter.post('/pair', pairLimiter, async (req, res) => {
   const { code } = req.body;
   if (!code || typeof code !== 'string') {
     return res.status(400).json({ error: 'code is required' });

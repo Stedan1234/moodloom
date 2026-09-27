@@ -32,6 +32,17 @@ Use whatever password you like — just make sure it matches the `DATABASE_URL` 
 ```bash
 cd backend
 cp .env.example .env   # edit DATABASE_URL to match your local Postgres user/password
+```
+
+Then edit `.env` and generate a real `JWT_SECRET` (the server refuses to start with the placeholder value):
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```
+
+Paste the output in as `JWT_SECRET`, then:
+
+```bash
 npm install
 npm run migrate        # creates the tables
 npm run dev
@@ -77,5 +88,10 @@ That reload-and-persist check is the whole point: this is the actual core loop t
 
 - No visual/brand identity yet — this is a functional prototype (see `mvp-scope.md` for what's deliberately deferred to v2)
 - Instagram links save fine but don't render an inline embed yet (their oEmbed API needs Meta app review — flagged in `backend/src/services/mediaDetector.js`)
-- CORS is wide open on the backend for local dev — needs tightening before this touches the public internet
 - Board layout is a fixed grid, not freeform — a deliberate v1 decision (see `mvp-scope.md`)
+
+## Security notes
+
+- CORS is now locked to the origins listed in `ALLOWED_ORIGINS` (plus the browser extension, which is always allowed — see `backend/src/config/cors.js`). Add your deployed frontend's URL there before hosting this anywhere but localhost.
+- The auth endpoints (`/auth/anonymous`, `/auth/login`, `/auth/claim`, `/auth/pairing-code`, `/auth/pair`) are rate-limited per IP (see `backend/src/middleware/rateLimit.js`) to blunt scripted abuse and pairing-code brute-force attempts.
+- The server refuses to start without a real `JWT_SECRET` — see step 4 above.
