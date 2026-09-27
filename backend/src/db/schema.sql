@@ -1,0 +1,46 @@
+-- Moodloom MVP schema
+-- Auth model: anonymous-by-default with optional email backup (same pattern as DreamWise)
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  anon_token UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+  email TEXT UNIQUE,
+  password_hash TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
+
+-- "board_items" holds every captured reference (image, video link, generic link)
+-- that lives on a project's fixed-grid board.
+CREATE TABLE IF NOT EXISTS board_items (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_url TEXT NOT NULL,
+  media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video', 'link')),
+  title TEXT,
+  thumbnail_url TEXT,
+  embed_html TEXT,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_board_items_project_id ON board_items(project_id);
+
+-- Minimal per-project workspace notes area (v1: text only, per MVP scope)
+CREATE TABLE IF NOT EXISTS workspace_notes (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  content TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
