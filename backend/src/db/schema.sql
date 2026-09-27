@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS board_items (
 
 CREATE INDEX IF NOT EXISTS idx_board_items_project_id ON board_items(project_id);
 
+-- Belt-and-suspenders for the duplicate-capture guard in boardItems.js: that
+-- check-then-insert has a small race window (two near-simultaneous requests
+-- for the same URL could both pass the SELECT before either INSERTs), so
+-- this constraint is the actual backstop that makes a true duplicate
+-- impossible at the database level, regardless of timing.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_board_items_project_url_unique
+  ON board_items(project_id, source_url);
+
 -- Minimal per-project workspace notes area (v1: text only, per MVP scope)
 CREATE TABLE IF NOT EXISTS workspace_notes (
   id SERIAL PRIMARY KEY,

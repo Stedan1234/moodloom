@@ -12,6 +12,7 @@ export default function ProjectView({ projectId, onBack }) {
   const [error, setError] = useState(null);
   const [manualUrl, setManualUrl] = useState('');
   const [adding, setAdding] = useState(false);
+  const [notice, setNotice] = useState(null);
 
   async function refreshItems() {
     try {
@@ -31,9 +32,17 @@ export default function ProjectView({ projectId, onBack }) {
     e.preventDefault();
     if (!manualUrl.trim()) return;
     setAdding(true);
+    setNotice(null);
     try {
-      await api.captureItem(projectId, manualUrl.trim());
+      const result = await api.captureItem(projectId, manualUrl.trim());
       setManualUrl('');
+      // The backend de-dupes by URL and returns the existing item instead of
+      // creating a second one — this just surfaces that to the person
+      // instead of silently doing nothing (or, before this fix, silently
+      // creating a duplicate).
+      if (result.alreadyOnBoard) {
+        setNotice('That reference is already on this board.');
+      }
       await refreshItems();
     } catch (err) {
       setError(err.message);
@@ -63,6 +72,9 @@ export default function ProjectView({ projectId, onBack }) {
 
       {error && (
         <div className="mb-4 rounded bg-red-50 text-red-700 text-sm px-3 py-2">{error}</div>
+      )}
+      {notice && (
+        <div className="mb-4 rounded bg-gray-50 text-gray-600 text-sm px-3 py-2">{notice}</div>
       )}
 
       <div className="flex-1 grid grid-cols-[1fr_340px] gap-6 min-h-0">

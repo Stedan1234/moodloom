@@ -53,27 +53,62 @@ boardItemsRouter.post('/', async (req, res) => {
     return res.status(400).json({ error: 'sourceUrl must be a valid URL' });
   }
 
-  const { mediaType, embedHtml, thumbnailUrl } = detectMedia(parsedUrl.toString());
+  const normalizedUrl = parsedUrl.toString();
+
+  // Duplicate-capture guard: clicking "Add to board" twice (a double-click,
+  // or a slow network making someone click again) previously created two
+  // separate board items for the same reference. Instead of inserting again,
+  // return the item that's already there — same shape, but with
+  // alreadyOnBoard so the caller can tell the person nothing new was added,
+  // rather than silently duplicating it on the board.
+  const existing = await pool.query(
+    `SELECT id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at
+     FROM board_items WHERE project_id = $1 AND source_url = $2
+     ORDER BY created_at ASC LIMIT 1`,
+    [req.params.projectId, normalizedUrl]
+  );
+  if (existing.rows.length > 0) {
+    return res.status(200).json({ ...existing.rows[0], alreadyOnBoard: true });
+  }
+
+  const { mediaType, embedHtml, thumbnailUrl } = detectMedia(normalizedUrl);
 
   const nextPosition = await pool.query(
     'SELECT COALESCE(MAX(position), -1) + 1 AS next FROM board_items WHERE project_id = $1',
     [req.params.projectId]
   );
 
-  const result = await pool.query(
-    `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at`,
-    [
-      req.params.projectId,
-      parsedUrl.toString(),
-      mediaType,
-      title?.trim() || null,
-      thumbnailUrl,
-      embedHtml,
-      nextPosition.rows[0].next,
-    ]
-  );
+  let result;
+  try {
+    result = await pool.query(
+      `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at`,
+      [
+        req.params.projectId,
+        normalizedUrl,
+        mediaType,
+        title?.trim() || null,
+        thumbnailUrl,
+        embedHtml,
+        nextPosition.rows[0].next,
+      ]
+    );
+  } catch (err) {
+    // 23505 = unique_violation. This means the SELECT-then-INSERT race above
+    // actually happened (two near-simultaneous captures of the same URL) —
+    // the database constraint caught what the earlier check couldn't. Same
+    // graceful response as the normal duplicate path, not a 500.
+    if (err.code === '23505') {
+      const raceWinner = await pool.query(
+        `SELECT id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at
+         FROM board_items WHERE project_id = $1 AND source_url = $2`,
+        [req.params.projectId, normalizedUrl]
+      );
+      return res.status(200).json({ ...raceWinner.rows[0], alreadyOnBoard: true });
+    }
+    throw err;
+  }
 
   await pool.query('UPDATE projects SET updated_at = now() WHERE id = $1', [req.params.projectId]);
 

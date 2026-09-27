@@ -124,8 +124,15 @@ captureBtn.addEventListener('click', async () => {
       projectId = project.id;
     }
 
-    await api.captureItem(projectId, currentTab.url, currentTab.title);
-    setStatus(status, 'Added to board ✓', 'success');
+    const result = await api.captureItem(projectId, currentTab.url, currentTab.title);
+    // The backend de-dupes by URL — clicking "Add to board" twice (or the
+    // popup re-firing before the first request finished) no longer creates
+    // a second board item, it just returns the one already there.
+    setStatus(
+      status,
+      result.alreadyOnBoard ? 'Already on this board' : 'Added to board ✓',
+      'success'
+    );
   } catch (err) {
     if (err.message === 'NOT_PAIRED') {
       await showPairingView();
