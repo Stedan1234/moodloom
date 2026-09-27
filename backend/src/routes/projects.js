@@ -1,6 +1,9 @@
 import { Router } from 'express';
+import fs from 'fs';
+import path from 'path';
 import { pool } from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
+import { UPLOADS_DIR, PUBLIC_BASE_URL } from '../config/uploads.js';
 
 export const projectsRouter = Router();
 projectsRouter.use(requireAuth);
@@ -75,6 +78,28 @@ projectsRouter.patch('/:id', async (req, res) => {
 projectsRouter.delete('/:id', async (req, res) => {
   const project = await findOwnedProject(req, res);
   if (!project) return;
+
+  // Deleting a project cascades to its board_items in the DB (see schema.sql
+  // FK), but that cascade never touches the filesystem — an uploaded image's
+  // bytes would be orphaned in uploads/ forever otherwise. The single-item
+  // DELETE route (boardItems.js) does this same cleanup for one item at a
+  // time; this covers the "delete the whole project" path, which skips that
+  // route entirely.
+  const uploadPrefix = `${PUBLIC_BASE_URL}/uploads/`;
+  const uploadedItems = await pool.query(
+    'SELECT source_url FROM board_items WHERE project_id = $1 AND source_url LIKE $2',
+    [project.id, `${uploadPrefix}%`]
+  );
+  for (const row of uploadedItems.rows) {
+    const filename = row.source_url.slice(uploadPrefix.length);
+    if (/^[a-zA-Z0-9-]+\.(png|jpg|jpeg|gif|webp)$/.test(filename)) {
+      fs.unlink(path.join(UPLOADS_DIR, filename), (err) => {
+        if (err && err.code !== 'ENOENT') {
+          console.error(`Failed to delete uploaded file ${filename}:`, err.message);
+        }
+      });
+    }
+  }
 
   await pool.query('DELETE FROM projects WHERE id = $1', [project.id]);
   res.status(204).send();

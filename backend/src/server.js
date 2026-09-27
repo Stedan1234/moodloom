@@ -8,6 +8,7 @@ import { projectsRouter } from './routes/projects.js';
 import { boardItemsRouter } from './routes/boardItems.js';
 import { workspaceRouter } from './routes/workspace.js';
 import { corsOptions } from './config/cors.js';
+import { UPLOADS_DIR } from './config/uploads.js';
 
 dotenv.config();
 
@@ -34,6 +35,12 @@ app.use(express.json());
 app.get('/health', (req, res) => {
   res.json({ ok: true, service: 'moodloom-backend' });
 });
+
+// Serves uploaded images (screenshots / files added from someone's own
+// computer) back out at the same PUBLIC_BASE_URL + /uploads/<file> URL
+// that gets stored in board_items.source_url — see config/uploads.js and
+// the POST /upload route in boardItems.js.
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 app.use('/auth', authRouter);
 app.use('/projects', projectsRouter);

@@ -75,6 +75,31 @@ export const api = {
   deleteItem: (projectId, itemId) =>
     apiFetch(`/projects/${projectId}/items/${itemId}`, { method: 'DELETE' }),
 
+  // Uploads an image file (from a file picker, or a pasted screenshot handed
+  // in as a Blob) as a new board item. Can't reuse apiFetch here — it always
+  // sets Content-Type: application/json, but multipart/form-data needs the
+  // browser to set its own Content-Type (with the multipart boundary), so
+  // the token is attached manually and Content-Type is left for fetch to fill in.
+  uploadItem: async (projectId, file) => {
+    const token = await getOrCreateToken();
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`${API_BASE}/projects/${projectId}/items/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (res.status === 401) {
+      localStorage.removeItem(TOKEN_KEY);
+      throw new Error('Your session needed to be refreshed — please try that again.');
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Upload failed (${res.status})`);
+    }
+    return res.json();
+  },
+
   getWorkspace: (projectId) => apiFetch(`/projects/${projectId}/workspace`),
   saveWorkspace: (projectId, content) =>
     apiFetch(`/projects/${projectId}/workspace`, {

@@ -21,6 +21,8 @@ export default function ProjectView({ projectId, onBack }) {
   const [manualUrl, setManualUrl] = useState('');
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
   // Tracks items the user just deleted but whose DELETE request hasn't been
   // confirmed by the server yet — without this, a poll landing in that gap
   // would make a just-deleted item flicker back before the request completes.
@@ -59,6 +61,49 @@ export default function ProjectView({ projectId, onBack }) {
 
     const interval = setInterval(pollItems, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  async function handleUploadFile(file) {
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.uploadItem(projectId, file);
+      await refreshItems();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // Screenshots almost never live as a saved file — the normal flow is
+  // snip-to-clipboard, then paste. Listening on the whole board (rather than
+  // requiring a specific input to be focused) means that flow just works the
+  // moment someone's looking at this project, without an extra click first.
+  // Guarded so a paste while actually typing in a text field (the URL box,
+  // or a workspace note) isn't hijacked into an upload.
+  useEffect(() => {
+    function onPaste(e) {
+      const target = e.target;
+      const isTyping =
+        target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable;
+      if (isTyping) return;
+
+      const imageItem = Array.from(e.clipboardData?.items || []).find((item) =>
+        item.type.startsWith('image/')
+      );
+      if (!imageItem) return;
+
+      e.preventDefault();
+      const file = imageItem.getAsFile();
+      if (file) handleUploadFile(file);
+    }
+
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -121,7 +166,7 @@ export default function ProjectView({ projectId, onBack }) {
           {/* Manual-add fallback: the extension is the primary v1 capture path,
               but pasting a URL directly here means the board is still usable
               on a machine without the extension installed. */}
-          <form onSubmit={handleManualAdd} className="flex gap-2 mb-4">
+          <form onSubmit={handleManualAdd} className="flex gap-2 mb-2">
             <input
               type="text"
               value={manualUrl}
@@ -137,6 +182,31 @@ export default function ProjectView({ projectId, onBack }) {
               Add
             </button>
           </form>
+
+          {/* Second way to capture something: a file already on disk, or —
+              far more common for a screenshot — snip it and paste (Ctrl/Cmd+V)
+              anywhere on this board; see the window "paste" listener above. */}
+          <div className="flex items-center gap-2 mb-4">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              className="hidden"
+              onChange={(e) => {
+                handleUploadFile(e.target.files?.[0]);
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="text-sm text-gray-500 hover:text-gray-800 underline disabled:text-gray-300"
+            >
+              {uploading ? 'Uploading…' : 'Upload an image from your computer'}
+            </button>
+            <span className="text-xs text-gray-400">or paste a screenshot (Ctrl/Cmd+V)</span>
+          </div>
 
           {items === null && <p className="text-gray-400 text-sm">Loading…</p>}
           {items?.length === 0 && (

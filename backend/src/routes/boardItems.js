@@ -1,8 +1,41 @@
 import { Router } from 'express';
+import multer from 'multer';
+import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
 import { pool } from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
 import { detectMedia } from '../services/mediaDetector.js';
 import { fetchPagePreview } from '../services/pagePreview.js';
+import { UPLOADS_DIR, PUBLIC_BASE_URL, MAX_UPLOAD_BYTES, ALLOWED_MIME_TYPES } from '../config/uploads.js';
+
+const MIME_EXTENSIONS = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOADS_DIR,
+    // Never trust the client-supplied filename — it's attacker-controlled
+    // input (could contain path traversal characters, or just collide with
+    // another user's file). Generate a random name instead, with an
+    // extension derived from the verified mimetype, not the original name.
+    filename: (req, file, cb) => {
+      const ext = MIME_EXTENSIONS[file.mimetype] || '';
+      cb(null, `${crypto.randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+  fileFilter: (req, file, cb) => {
+    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
+      return cb(new Error('UNSUPPORTED_FILE_TYPE'));
+    }
+    cb(null, true);
+  },
+});
 
 // mergeParams so we can read :projectId from the parent router (mounted at /projects/:projectId/items)
 export const boardItemsRouter = Router({ mergeParams: true });
@@ -131,6 +164,51 @@ boardItemsRouter.post('/', async (req, res) => {
   res.status(201).json(result.rows[0]);
 });
 
+/**
+ * POST /projects/:projectId/items/upload — captures an image from the
+ * user's own computer or clipboard (a saved reference file, or a pasted
+ * screenshot), rather than a URL. Everything else in this file references
+ * something already living on the web; this is the one path where Moodloom
+ * itself stores the actual bytes.
+ * multipart/form-data, field name "file".
+ */
+boardItemsRouter.post('/upload', (req, res, next) => {
+  upload.single('file')(req, res, (err) => {
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'That image is too large (15MB max).' });
+    }
+    if (err?.message === 'UNSUPPORTED_FILE_TYPE') {
+      return res.status(400).json({ error: 'Only PNG, JPEG, GIF, or WEBP images are supported.' });
+    }
+    if (err) return next(err);
+    next();
+  });
+}, async (req, res) => {
+  if (!(await assertProjectOwnership(req, res))) return;
+
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file was uploaded.' });
+  }
+
+  const publicUrl = `${PUBLIC_BASE_URL}/uploads/${req.file.filename}`;
+
+  const nextPosition = await pool.query(
+    'SELECT COALESCE(MAX(position), -1) + 1 AS next FROM board_items WHERE project_id = $1',
+    [req.params.projectId]
+  );
+
+  const result = await pool.query(
+    `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position)
+     VALUES ($1, $2, 'image', $3, $2, NULL, $4)
+     RETURNING id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at`,
+    [req.params.projectId, publicUrl, req.body.title?.trim() || null, nextPosition.rows[0].next]
+  );
+
+  await pool.query('UPDATE projects SET updated_at = now() WHERE id = $1', [req.params.projectId]);
+
+  res.status(201).json(result.rows[0]);
+});
+
 // PATCH /projects/:projectId/items/:itemId — currently just supports reordering
 // (position), since v1's board is a fixed grid, not a freeform canvas.
 boardItemsRouter.patch('/:itemId', async (req, res) => {
@@ -158,11 +236,33 @@ boardItemsRouter.delete('/:itemId', async (req, res) => {
   if (!(await assertProjectOwnership(req, res))) return;
 
   const result = await pool.query(
-    'DELETE FROM board_items WHERE id = $1 AND project_id = $2 RETURNING id',
+    'DELETE FROM board_items WHERE id = $1 AND project_id = $2 RETURNING id, source_url',
     [req.params.itemId, req.params.projectId]
   );
   if (result.rows.length === 0) {
     return res.status(404).json({ error: 'Item not found' });
   }
+
+  // If this item's source_url points at a file WE stored (an upload, not a
+  // captured link), clean it up from disk. Otherwise uploads/ would
+  // accumulate orphaned files forever — every deleted upload item leaks
+  // 15MB-max of disk with nothing to ever reclaim it.
+  const uploadPrefix = `${PUBLIC_BASE_URL}/uploads/`;
+  const deletedUrl = result.rows[0].source_url;
+  if (deletedUrl && deletedUrl.startsWith(uploadPrefix)) {
+    const filename = deletedUrl.slice(uploadPrefix.length);
+    // Guard against a malformed/unexpected value ever being used as a path
+    // (defense in depth — filenames are always our own crypto.randomUUID()
+    // output, but never trust a DB string as a filesystem path without
+    // checking it first).
+    if (/^[a-zA-Z0-9-]+\.(png|jpg|jpeg|gif|webp)$/.test(filename)) {
+      fs.unlink(path.join(UPLOADS_DIR, filename), (err) => {
+        if (err && err.code !== 'ENOENT') {
+          console.error(`Failed to delete uploaded file ${filename}:`, err.message);
+        }
+      });
+    }
+  }
+
   res.status(204).send();
 });
