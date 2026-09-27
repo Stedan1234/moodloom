@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { authRouter } from './routes/auth.js';
 import { projectsRouter } from './routes/projects.js';
 import { boardItemsRouter } from './routes/boardItems.js';
+import { categoriesRouter } from './routes/categories.js';
 import { workspaceRouter } from './routes/workspace.js';
 import { corsOptions } from './config/cors.js';
 import { UPLOADS_DIR } from './config/uploads.js';
@@ -45,6 +46,7 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 app.use('/auth', authRouter);
 app.use('/projects', projectsRouter);
 app.use('/projects/:projectId/items', boardItemsRouter);
+app.use('/projects/:projectId/categories', categoriesRouter);
 app.use('/projects/:projectId/workspace', workspaceRouter);
 
 // Catch-all error handler. `express-async-errors` (imported above) makes any

@@ -21,6 +21,23 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
 
+-- User-defined groupings within a project (e.g. "Design Inspiration", "Post
+-- Ideas", "Video Direction") — raised during real dogfooding as a way to
+-- separate everything living on one project's board once it grows past a
+-- handful of items. Per-project (not global) since different projects may
+-- need entirely different groupings; every project is seeded with a starter
+-- set on creation (see routes/projects.js) but the list is fully editable —
+-- there's no fixed enum, since the whole point is "we'll add more as we go."
+CREATE TABLE IF NOT EXISTS categories (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_categories_project_id ON categories(project_id);
+
 -- "board_items" holds every captured reference (image, video link, generic link)
 -- that lives on a project's fixed-grid board.
 CREATE TABLE IF NOT EXISTS board_items (
@@ -35,7 +52,13 @@ CREATE TABLE IF NOT EXISTS board_items (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- NULL = uncategorized (the default — nothing forces a category at capture
+-- time). ON DELETE SET NULL: removing a category un-categorizes its items
+-- rather than deleting them.
+ALTER TABLE board_items ADD COLUMN IF NOT EXISTS category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_board_items_project_id ON board_items(project_id);
+CREATE INDEX IF NOT EXISTS idx_board_items_category_id ON board_items(category_id);
 
 -- Belt-and-suspenders for the duplicate-capture guard in boardItems.js: that
 -- check-then-insert has a small race window (two near-simultaneous requests

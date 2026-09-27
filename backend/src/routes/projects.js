@@ -4,6 +4,7 @@ import path from 'path';
 import { pool } from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
 import { UPLOADS_DIR, PUBLIC_BASE_URL } from '../config/uploads.js';
+import { STARTER_CATEGORY_NAMES } from '../db/starterCategories.js';
 
 export const projectsRouter = Router();
 projectsRouter.use(requireAuth);
@@ -34,6 +35,20 @@ projectsRouter.post('/', async (req, res) => {
     'INSERT INTO projects (user_id, name) VALUES ($1, $2) RETURNING id, name, created_at, updated_at',
     [req.userId, name.trim()]
   );
+
+  // Seed a starter set of categories so a brand-new project isn't just one
+  // undifferentiated board from the start — raised during dogfooding as a
+  // way to separate design inspiration from post ideas from video direction
+  // etc. Fully editable afterwards (see routes/categories.js); this is just
+  // a helpful default, not a fixed structure.
+  for (let i = 0; i < STARTER_CATEGORY_NAMES.length; i++) {
+    await pool.query('INSERT INTO categories (project_id, name, position) VALUES ($1, $2, $3)', [
+      result.rows[0].id,
+      STARTER_CATEGORY_NAMES[i],
+      i,
+    ]);
+  }
+
   res.status(201).json(result.rows[0]);
 });
 

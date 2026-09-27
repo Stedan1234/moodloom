@@ -67,23 +67,29 @@ export const api = {
   deleteProject: (id) => apiFetch(`/projects/${id}`, { method: 'DELETE' }),
 
   listItems: (projectId) => apiFetch(`/projects/${projectId}/items`),
-  captureItem: (projectId, sourceUrl, title) =>
+  captureItem: (projectId, sourceUrl, title, categoryId) =>
     apiFetch(`/projects/${projectId}/items`, {
       method: 'POST',
-      body: JSON.stringify({ sourceUrl, title }),
+      body: JSON.stringify({ sourceUrl, title, categoryId }),
     }),
   deleteItem: (projectId, itemId) =>
     apiFetch(`/projects/${projectId}/items/${itemId}`, { method: 'DELETE' }),
+  setItemCategory: (projectId, itemId, categoryId) =>
+    apiFetch(`/projects/${projectId}/items/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ categoryId }),
+    }),
 
   // Uploads an image file (from a file picker, or a pasted screenshot handed
   // in as a Blob) as a new board item. Can't reuse apiFetch here — it always
   // sets Content-Type: application/json, but multipart/form-data needs the
   // browser to set its own Content-Type (with the multipart boundary), so
   // the token is attached manually and Content-Type is left for fetch to fill in.
-  uploadItem: async (projectId, file) => {
+  uploadItem: async (projectId, file, categoryId) => {
     const token = await getOrCreateToken();
     const formData = new FormData();
     formData.append('file', file);
+    if (categoryId) formData.append('categoryId', categoryId);
     const res = await fetch(`${API_BASE}/projects/${projectId}/items/upload`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
@@ -99,6 +105,20 @@ export const api = {
     }
     return res.json();
   },
+
+  // Per-project groupings (Design Inspiration, Post Ideas, etc.) — every
+  // project starts with a starter set (seeded server-side on creation) but
+  // the list is fully user-editable from here.
+  listCategories: (projectId) => apiFetch(`/projects/${projectId}/categories`),
+  createCategory: (projectId, name) =>
+    apiFetch(`/projects/${projectId}/categories`, { method: 'POST', body: JSON.stringify({ name }) }),
+  renameCategory: (projectId, categoryId, name) =>
+    apiFetch(`/projects/${projectId}/categories/${categoryId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  deleteCategory: (projectId, categoryId) =>
+    apiFetch(`/projects/${projectId}/categories/${categoryId}`, { method: 'DELETE' }),
 
   getWorkspace: (projectId) => apiFetch(`/projects/${projectId}/workspace`),
   saveWorkspace: (projectId, content) =>

@@ -73,9 +73,10 @@ const api = {
   listProjects: () => apiFetch('/projects'),
   createProject: (name) =>
     apiFetch('/projects', { method: 'POST', body: JSON.stringify({ name }) }),
-  captureItem: (projectId, sourceUrl, title) =>
+  captureItem: (projectId, sourceUrl, title, categoryId) =>
     apiFetch(`/projects/${projectId}/items`, {
       method: 'POST',
-      body: JSON.stringify({ sourceUrl, title }),
+      body: JSON.stringify({ sourceUrl, title, categoryId }),
     }),
+  listCategories: (projectId) => apiFetch(`/projects/${projectId}/categories`),
 };

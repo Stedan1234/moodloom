@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import BoardItem from './BoardItem';
+import CategoryTabs from './CategoryTabs';
 import Workspace from './Workspace';
 
 // How often to poll for new items while a project is open. This is what
@@ -23,6 +24,20 @@ export default function ProjectView({ projectId, onBack }) {
   const [notice, setNotice] = useState(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
+  const [categories, setCategories] = useState([]);
+  // null = "All" — the currently viewed tab, and also where a new capture
+  // (URL or upload) lands, so adding something while a category tab is
+  // active files it straight into that category instead of always dumping
+  // into "Uncategorized".
+  const [activeCategoryId, setActiveCategoryId] = useState(null);
+  // The paste listener below is attached once per project (not re-attached
+  // on every category switch), so it can't just close over activeCategoryId
+  // directly — that would freeze it at whatever tab was active when the
+  // listener was first attached. A ref keeps it reading the CURRENT tab.
+  const activeCategoryIdRef = useRef(null);
+  useEffect(() => {
+    activeCategoryIdRef.current = activeCategoryId;
+  }, [activeCategoryId]);
   // Tracks items the user just deleted but whose DELETE request hasn't been
   // confirmed by the server yet — without this, a poll landing in that gap
   // would make a just-deleted item flicker back before the request completes.
@@ -55,14 +70,56 @@ export default function ProjectView({ projectId, onBack }) {
     }
   }
 
+  async function refreshCategories() {
+    try {
+      setCategories(await api.listCategories(projectId));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   useEffect(() => {
     api.getProject(projectId).then(setProject).catch((err) => setError(err.message));
     refreshItems();
+    refreshCategories();
+    setActiveCategoryId(null);
 
     const interval = setInterval(pollItems, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  async function handleCreateCategory(name) {
+    try {
+      const category = await api.createCategory(projectId, name);
+      setCategories((prev) => [...prev, category]);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleRenameCategory(categoryId, name) {
+    try {
+      const updated = await api.renameCategory(projectId, categoryId, name);
+      setCategories((prev) => prev.map((c) => (c.id === categoryId ? updated : c)));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function handleDeleteCategory(categoryId) {
+    setCategories((prev) => prev.filter((c) => c.id !== categoryId));
+    if (activeCategoryId === categoryId) setActiveCategoryId(null);
+    try {
+      await api.deleteCategory(projectId, categoryId);
+      // Items that were in this category are now uncategorized server-side
+      // (ON DELETE SET NULL) — refresh so the board reflects that.
+      await refreshItems();
+    } catch (err) {
+      setError(err.message);
+      await refreshCategories();
+    }
+  }
 
   async function handleUploadFile(file) {
     if (!file) return;
@@ -70,7 +127,7 @@ export default function ProjectView({ projectId, onBack }) {
     setError(null);
     setNotice(null);
     try {
-      await api.uploadItem(projectId, file);
+      await api.uploadItem(projectId, file, activeCategoryIdRef.current);
       await refreshItems();
     } catch (err) {
       setError(err.message);
@@ -113,7 +170,7 @@ export default function ProjectView({ projectId, onBack }) {
     setAdding(true);
     setNotice(null);
     try {
-      const result = await api.captureItem(projectId, manualUrl.trim());
+      const result = await api.captureItem(projectId, manualUrl.trim(), undefined, activeCategoryId);
       setManualUrl('');
       // The backend de-dupes by URL and returns the existing item instead of
       // creating a second one — this just surfaces that to the person
@@ -144,6 +201,9 @@ export default function ProjectView({ projectId, onBack }) {
       await refreshItems();
     }
   }
+
+  const visibleItems =
+    activeCategoryId === null ? items || [] : (items || []).filter((item) => item.category_id === activeCategoryId);
 
   return (
     <div className="max-w-6xl mx-auto p-6 h-screen flex flex-col">
@@ -208,11 +268,23 @@ export default function ProjectView({ projectId, onBack }) {
             <span className="text-xs text-gray-400">or paste a screenshot (Ctrl/Cmd+V)</span>
           </div>
 
+          <CategoryTabs
+            categories={categories}
+            activeCategoryId={activeCategoryId}
+            onSelect={setActiveCategoryId}
+            onCreate={handleCreateCategory}
+            onRename={handleRenameCategory}
+            onDelete={handleDeleteCategory}
+          />
+
           {items === null && <p className="text-gray-400 text-sm">Loading…</p>}
           {items?.length === 0 && (
             <p className="text-gray-400 text-sm">
               No references yet. Use the browser extension on any page, or paste a URL above.
             </p>
+          )}
+          {items?.length > 0 && visibleItems.length === 0 && (
+            <p className="text-gray-400 text-sm">Nothing in this category yet.</p>
           )}
 
           {/* Bumped from 3 columns to 2 after real dogfooding feedback that
@@ -220,7 +292,7 @@ export default function ProjectView({ projectId, onBack }) {
               actually evaluate. Enlarging any item further is one click away
               via the ⤢ button (see BoardItem's lightbox). */}
           <div className="grid grid-cols-2 gap-4">
-            {items?.map((item) => (
+            {visibleItems.map((item) => (
               <BoardItem key={item.id} item={item} onDelete={handleDelete} />
             ))}
           </div>

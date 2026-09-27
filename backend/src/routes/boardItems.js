@@ -55,12 +55,30 @@ async function assertProjectOwnership(req, res) {
   return true;
 }
 
+// Resolves a client-supplied categoryId into a safe value to store: null
+// (uncategorized) if omitted, or the id itself once confirmed to actually
+// belong to this project — never trust a raw id straight from the request,
+// since it could name a category from an entirely different project.
+async function resolveCategoryId(projectId, categoryId) {
+  if (categoryId === undefined || categoryId === null || categoryId === '') return null;
+  const check = await pool.query('SELECT id FROM categories WHERE id = $1 AND project_id = $2', [
+    categoryId,
+    projectId,
+  ]);
+  if (check.rows.length === 0) {
+    return undefined; // signals "invalid" to the caller
+  }
+  return check.rows[0].id;
+}
+
+const ITEM_FIELDS = 'id, source_url, media_type, title, thumbnail_url, embed_html, position, category_id, created_at';
+
 // GET /projects/:projectId/items — the fixed-grid board contents, in position order
 boardItemsRouter.get('/', async (req, res) => {
   if (!(await assertProjectOwnership(req, res))) return;
 
   const result = await pool.query(
-    'SELECT id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at FROM board_items WHERE project_id = $1 ORDER BY position ASC, created_at ASC',
+    `SELECT ${ITEM_FIELDS} FROM board_items WHERE project_id = $1 ORDER BY position ASC, created_at ASC`,
     [req.params.projectId]
   );
   res.json(result.rows);
@@ -70,14 +88,19 @@ boardItemsRouter.get('/', async (req, res) => {
  * POST /projects/:projectId/items — THE core-loop endpoint.
  * This is what the browser extension calls the moment someone hits
  * "Add to Moodloom" on a page — capture-at-source, in one action.
- * Body: { sourceUrl, title? }
+ * Body: { sourceUrl, title?, categoryId? }
  */
 boardItemsRouter.post('/', async (req, res) => {
   if (!(await assertProjectOwnership(req, res))) return;
 
-  const { sourceUrl, title } = req.body;
+  const { sourceUrl, title, categoryId } = req.body;
   if (!sourceUrl || !sourceUrl.trim()) {
     return res.status(400).json({ error: 'sourceUrl is required' });
+  }
+
+  const resolvedCategoryId = await resolveCategoryId(req.params.projectId, categoryId);
+  if (resolvedCategoryId === undefined) {
+    return res.status(400).json({ error: 'Invalid category' });
   }
 
   let parsedUrl;
@@ -94,9 +117,11 @@ boardItemsRouter.post('/', async (req, res) => {
   // separate board items for the same reference. Instead of inserting again,
   // return the item that's already there — same shape, but with
   // alreadyOnBoard so the caller can tell the person nothing new was added,
-  // rather than silently duplicating it on the board.
+  // rather than silently duplicating it on the board. Note this doesn't
+  // move it to whatever category was picked this time — a duplicate capture
+  // leaves the existing item's category alone.
   const existing = await pool.query(
-    `SELECT id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at
+    `SELECT ${ITEM_FIELDS}
      FROM board_items WHERE project_id = $1 AND source_url = $2
      ORDER BY created_at ASC LIMIT 1`,
     [req.params.projectId, normalizedUrl]
@@ -130,9 +155,9 @@ boardItemsRouter.post('/', async (req, res) => {
   let result;
   try {
     result = await pool.query(
-      `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at`,
+      `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position, category_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING ${ITEM_FIELDS}`,
       [
         req.params.projectId,
         normalizedUrl,
@@ -141,6 +166,7 @@ boardItemsRouter.post('/', async (req, res) => {
         thumbnailUrl,
         embedHtml,
         nextPosition.rows[0].next,
+        resolvedCategoryId,
       ]
     );
   } catch (err) {
@@ -150,7 +176,7 @@ boardItemsRouter.post('/', async (req, res) => {
     // graceful response as the normal duplicate path, not a 500.
     if (err.code === '23505') {
       const raceWinner = await pool.query(
-        `SELECT id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at
+        `SELECT ${ITEM_FIELDS}
          FROM board_items WHERE project_id = $1 AND source_url = $2`,
         [req.params.projectId, normalizedUrl]
       );
@@ -184,10 +210,34 @@ boardItemsRouter.post('/upload', (req, res, next) => {
     next();
   });
 }, async (req, res) => {
-  if (!(await assertProjectOwnership(req, res))) return;
+  // multer has already written the file to disk by this point (it runs
+  // before this handler) — any early return past here without inserting a
+  // board_item row must clean it up first, or it leaks as a permanent
+  // orphan with nothing ever pointing at it. All bail-out paths below go
+  // through this rather than a bare `return`.
+  function rejectAndCleanup(status, error) {
+    if (req.file) {
+      fs.unlink(req.file.path, (err) => {
+        if (err && err.code !== 'ENOENT') {
+          console.error(`Failed to clean up rejected upload ${req.file.filename}:`, err.message);
+        }
+      });
+    }
+    res.status(status).json({ error });
+  }
+
+  if (!(await assertProjectOwnership(req, res))) {
+    if (req.file) fs.unlink(req.file.path, () => {});
+    return;
+  }
 
   if (!req.file) {
     return res.status(400).json({ error: 'No file was uploaded.' });
+  }
+
+  const resolvedCategoryId = await resolveCategoryId(req.params.projectId, req.body.categoryId);
+  if (resolvedCategoryId === undefined) {
+    return rejectAndCleanup(400, 'Invalid category');
   }
 
   const publicUrl = `${PUBLIC_BASE_URL}/uploads/${req.file.filename}`;
@@ -198,10 +248,10 @@ boardItemsRouter.post('/upload', (req, res, next) => {
   );
 
   const result = await pool.query(
-    `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position)
-     VALUES ($1, $2, 'image', $3, $2, NULL, $4)
-     RETURNING id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at`,
-    [req.params.projectId, publicUrl, req.body.title?.trim() || null, nextPosition.rows[0].next]
+    `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position, category_id)
+     VALUES ($1, $2, 'image', $3, $2, NULL, $4, $5)
+     RETURNING ${ITEM_FIELDS}`,
+    [req.params.projectId, publicUrl, req.body.title?.trim() || null, nextPosition.rows[0].next, resolvedCategoryId]
   );
 
   await pool.query('UPDATE projects SET updated_at = now() WHERE id = $1', [req.params.projectId]);
@@ -209,21 +259,35 @@ boardItemsRouter.post('/upload', (req, res, next) => {
   res.status(201).json(result.rows[0]);
 });
 
-// PATCH /projects/:projectId/items/:itemId — currently just supports reordering
-// (position), since v1's board is a fixed grid, not a freeform canvas.
+// PATCH /projects/:projectId/items/:itemId — reordering (position) and/or
+// moving an item to a different category (or back to uncategorized, via
+// categoryId: null). v1's board is still a fixed grid, not a freeform canvas.
 boardItemsRouter.patch('/:itemId', async (req, res) => {
   if (!(await assertProjectOwnership(req, res))) return;
 
-  const { position } = req.body;
-  if (typeof position !== 'number') {
-    return res.status(400).json({ error: 'position (number) is required' });
+  const { position, categoryId } = req.body;
+  if (position === undefined && categoryId === undefined) {
+    return res.status(400).json({ error: 'position or categoryId is required' });
+  }
+  if (position !== undefined && typeof position !== 'number') {
+    return res.status(400).json({ error: 'position must be a number' });
+  }
+
+  let resolvedCategoryId;
+  if (categoryId !== undefined) {
+    resolvedCategoryId = await resolveCategoryId(req.params.projectId, categoryId);
+    if (resolvedCategoryId === undefined) {
+      return res.status(400).json({ error: 'Invalid category' });
+    }
   }
 
   const result = await pool.query(
-    `UPDATE board_items SET position = $1
-     WHERE id = $2 AND project_id = $3
-     RETURNING id, source_url, media_type, title, thumbnail_url, embed_html, position, created_at`,
-    [position, req.params.itemId, req.params.projectId]
+    `UPDATE board_items SET
+       position = COALESCE($1, position),
+       category_id = CASE WHEN $2 THEN $3 ELSE category_id END
+     WHERE id = $4 AND project_id = $5
+     RETURNING ${ITEM_FIELDS}`,
+    [position ?? null, categoryId !== undefined, resolvedCategoryId ?? null, req.params.itemId, req.params.projectId]
   );
   if (result.rows.length === 0) {
     return res.status(404).json({ error: 'Item not found' });

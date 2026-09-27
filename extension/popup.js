@@ -7,6 +7,7 @@ const captureView = document.getElementById('capture-view');
 const pagePreview = document.getElementById('page-preview');
 const projectSelect = document.getElementById('project-select');
 const newProjectInput = document.getElementById('new-project-name');
+const categorySelect = document.getElementById('category-select');
 const captureBtn = document.getElementById('capture-btn');
 const status = document.getElementById('status');
 const unpairLink = document.getElementById('unpair-link');
@@ -85,6 +86,9 @@ async function initCapture() {
     if (projects.length === 0) {
       projectSelect.value = NEW_PROJECT_VALUE;
       newProjectInput.style.display = 'block';
+      setCategoryOptions([], { disabled: true });
+    } else {
+      await loadCategoriesFor(projectSelect.value);
     }
 
     captureBtn.disabled = false;
@@ -97,8 +101,39 @@ async function initCapture() {
   }
 }
 
-projectSelect.addEventListener('change', () => {
-  newProjectInput.style.display = projectSelect.value === NEW_PROJECT_VALUE ? 'block' : 'none';
+// Populates the category dropdown for a given project, or resets it to just
+// "Uncategorized" (disabled) when there's no real project yet to draw
+// categories from — i.e. while "+ New project…" is selected, since that
+// project doesn't exist until Add to board is actually clicked.
+function setCategoryOptions(categories, { disabled } = {}) {
+  categorySelect.innerHTML = '<option value="">Uncategorized</option>';
+  for (const category of categories) {
+    const option = document.createElement('option');
+    option.value = category.id;
+    option.textContent = category.name;
+    categorySelect.appendChild(option);
+  }
+  categorySelect.disabled = Boolean(disabled);
+}
+
+async function loadCategoriesFor(projectId) {
+  try {
+    const categories = await api.listCategories(projectId);
+    setCategoryOptions(categories);
+  } catch {
+    // Non-fatal — worst case, this capture just goes in as Uncategorized.
+    setCategoryOptions([]);
+  }
+}
+
+projectSelect.addEventListener('change', async () => {
+  const isNewProject = projectSelect.value === NEW_PROJECT_VALUE;
+  newProjectInput.style.display = isNewProject ? 'block' : 'none';
+  if (isNewProject) {
+    setCategoryOptions([], { disabled: true });
+  } else {
+    await loadCategoriesFor(projectSelect.value);
+  }
 });
 
 captureBtn.addEventListener('click', async () => {
@@ -124,7 +159,11 @@ captureBtn.addEventListener('click', async () => {
       projectId = project.id;
     }
 
-    const result = await api.captureItem(projectId, currentTab.url, currentTab.title);
+    // categorySelect is disabled (and forced to "Uncategorized") whenever a
+    // brand-new project was just created, since that project has no
+    // categories to show until after this request completes.
+    const categoryId = categorySelect.disabled ? '' : categorySelect.value;
+    const result = await api.captureItem(projectId, currentTab.url, currentTab.title, categoryId);
     // The backend de-dupes by URL — clicking "Add to board" twice (or the
     // popup re-firing before the first request finished) no longer creates
     // a second board item, it just returns the one already there.
