@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
 import { detectMedia } from '../services/mediaDetector.js';
+import { fetchPagePreview } from '../services/pagePreview.js';
 
 // mergeParams so we can read :projectId from the parent router (mounted at /projects/:projectId/items)
 export const boardItemsRouter = Router({ mergeParams: true });
@@ -71,7 +72,22 @@ boardItemsRouter.post('/', async (req, res) => {
     return res.status(200).json({ ...existing.rows[0], alreadyOnBoard: true });
   }
 
-  const { mediaType, embedHtml, thumbnailUrl } = detectMedia(normalizedUrl);
+  const detected = detectMedia(normalizedUrl);
+  let { mediaType, embedHtml, thumbnailUrl } = detected;
+  let resolvedTitle = title?.trim() || null;
+
+  // For a generic link (not an image, not a known video provider), the
+  // capture used to save with zero visual — just a text card. Now fetch the
+  // page's own social-preview image/title (what it already publishes for
+  // Twitter/iMessage/Slack unfurls) and use that as a real thumbnail. Best
+  // effort: if the site blocks this, times out, or has no og tags, the
+  // capture still succeeds exactly as it did before — this only adds a
+  // thumbnail when one is actually available.
+  if (mediaType === 'link') {
+    const preview = await fetchPagePreview(normalizedUrl);
+    if (preview.ogImage) thumbnailUrl = preview.ogImage;
+    if (!resolvedTitle && preview.ogTitle) resolvedTitle = preview.ogTitle;
+  }
 
   const nextPosition = await pool.query(
     'SELECT COALESCE(MAX(position), -1) + 1 AS next FROM board_items WHERE project_id = $1',
@@ -88,7 +104,7 @@ boardItemsRouter.post('/', async (req, res) => {
         req.params.projectId,
         normalizedUrl,
         mediaType,
-        title?.trim() || null,
+        resolvedTitle,
         thumbnailUrl,
         embedHtml,
         nextPosition.rows[0].next,

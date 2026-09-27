@@ -145,7 +145,11 @@ export default function ProjectView({ projectId, onBack }) {
             </p>
           )}
 
-          <div className="grid grid-cols-3 gap-3">
+          {/* Bumped from 3 columns to 2 after real dogfooding feedback that
+              references — especially whole-page captures — were too small to
+              actually evaluate. Enlarging any item further is one click away
+              via the ⤢ button (see BoardItem's lightbox). */}
+          <div className="grid grid-cols-2 gap-4">
             {items?.map((item) => (
               <BoardItem key={item.id} item={item} onDelete={handleDelete} />
             ))}
