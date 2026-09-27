@@ -187,6 +187,19 @@ export default function ProjectView({ projectId, onBack }) {
     }
   }
 
+  async function handleMoveItemCategory(itemId, categoryId) {
+    // Optimistic — the select's own value already changed the instant the
+    // person picked an option, so the board should reflect that immediately
+    // rather than waiting on a round-trip.
+    setItems((prev) => prev.map((i) => (i.id === itemId ? { ...i, category_id: categoryId } : i)));
+    try {
+      await api.setItemCategory(projectId, itemId, categoryId);
+    } catch (err) {
+      setError(err.message);
+      await refreshItems();
+    }
+  }
+
   async function handleDelete(itemId) {
     pendingDeleteIds.current.add(itemId);
     setItems((prev) => prev.filter((i) => i.id !== itemId));
@@ -293,7 +306,13 @@ export default function ProjectView({ projectId, onBack }) {
               via the ⤢ button (see BoardItem's lightbox). */}
           <div className="grid grid-cols-2 gap-4">
             {visibleItems.map((item) => (
-              <BoardItem key={item.id} item={item} onDelete={handleDelete} />
+              <BoardItem
+                key={item.id}
+                item={item}
+                onDelete={handleDelete}
+                categories={categories}
+                onMoveCategory={handleMoveItemCategory}
+              />
             ))}
           </div>
         </div>

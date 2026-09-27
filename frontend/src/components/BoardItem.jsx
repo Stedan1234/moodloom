@@ -4,7 +4,7 @@ import { useState } from 'react';
 // mvp-scope.md: images and video play inline, not just a link-out — except
 // the known v1 Instagram gap (see backend/src/services/mediaDetector.js),
 // which falls back to a link-out card rather than failing.
-export default function BoardItem({ item, onDelete }) {
+export default function BoardItem({ item, onDelete, categories, onMoveCategory }) {
   const [expanded, setExpanded] = useState(false);
   const hasVisual =
     (item.media_type === 'image' && (item.thumbnail_url || item.source_url)) ||
@@ -21,6 +21,26 @@ export default function BoardItem({ item, onDelete }) {
         >
           ✕
         </button>
+
+        {/* Recategorize without deleting and re-adding — raised during
+            dogfooding: an item captured (or dropped) into the wrong category
+            needs a way out that isn't "delete and recapture it". */}
+        {categories?.length > 0 && (
+          <select
+            value={item.category_id ?? ''}
+            onChange={(e) => onMoveCategory(item.id, e.target.value ? Number(e.target.value) : null)}
+            onClick={(e) => e.stopPropagation()}
+            title="Move to category"
+            className="absolute bottom-1 right-1 z-10 max-w-[75%] text-[11px] rounded bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity border-none px-1 py-0.5"
+          >
+            <option value="">Uncategorized</option>
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        )}
 
         {hasVisual && (
           <button
