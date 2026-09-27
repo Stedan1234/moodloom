@@ -17,6 +17,11 @@
       font-size: 14px;
       margin: 0 0 10px;
     }
+    p {
+      font-size: 12px;
+      color: #444;
+      margin: 0 0 10px;
+    }
     label {
       display: block;
       font-size: 12px;
@@ -29,6 +34,12 @@
       padding: 6px;
       margin-bottom: 10px;
       font-size: 13px;
+    }
+    #pairing-code-input {
+      text-align: center;
+      letter-spacing: 2px;
+      font-family: monospace;
+      text-transform: uppercase;
     }
     .page-preview {
       font-size: 11px;
@@ -56,19 +67,46 @@
     #new-project-name {
       display: none;
     }
+    #unpair-link {
+      background: none;
+      color: #999;
+      text-decoration: underline;
+      font-size: 11px;
+      width: auto;
+      padding: 0;
+      margin: 8px 0 0;
+    }
   </style>
 </head>
 <body>
   <h1>Add to Moodloom</h1>
-  <div class="page-preview" id="page-preview">Loading current page…</div>
 
-  <label for="project-select">Project</label>
-  <select id="project-select"></select>
+  <!-- Shown until the extension is paired to a Moodloom account. Replaces
+       the old behavior of silently creating its own separate anonymous
+       account (see api.js for why that was wrong). -->
+  <div id="pairing-view">
+    <p>
+      Open Moodloom in the browser, click "Connect browser extension," and
+      enter the code it shows you here:
+    </p>
+    <input type="text" id="pairing-code-input" placeholder="CODE" maxlength="8" />
+    <button id="pair-btn">Connect</button>
+    <div id="pairing-status"></div>
+  </div>
 
-  <input type="text" id="new-project-name" placeholder="New project name" />
+  <!-- Shown once paired: the normal capture UI. -->
+  <div id="capture-view" style="display: none">
+    <div class="page-preview" id="page-preview">Loading current page…</div>
 
-  <button id="capture-btn" disabled>Add to board</button>
-  <div id="status"></div>
+    <label for="project-select">Project</label>
+    <select id="project-select"></select>
+
+    <input type="text" id="new-project-name" placeholder="New project name" />
+
+    <button id="capture-btn" disabled>Add to board</button>
+    <div id="status"></div>
+    <button id="unpair-link">Disconnect this extension</button>
+  </div>
 
   <script src="api.js"></script>
   <script src="popup.js"></script>

@@ -57,4 +57,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ content }),
     }),
+
+  // Generates a short-lived code the browser extension can redeem so it logs
+  // into this SAME account, instead of silently creating its own separate one.
+  getPairingCode: () => apiFetch('/auth/pairing-code', { method: 'POST' }),
 };
