@@ -11,7 +11,7 @@ import { api } from '../api';
 export default function SaveAccount() {
   const [checked, setChecked] = useState(false);
   const [claimed, setClaimed] = useState(false);
-  const [mode, setMode] = useState(null); // null | 'claim' | 'login'
+  const [mode, setMode] = useState(null); // null | 'claim' | 'login' | 'forgot'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -71,6 +71,22 @@ export default function SaveAccount() {
     }
   }
 
+  async function handleForgot(e) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      const res = await api.forgotPassword(email.trim());
+      setMode(null);
+      setSuccess(res.message);
+      setClaimed(true); // hides the banner so the confirmation message shows
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   if (!checked || claimed) {
     return success ? (
       <p className="text-xs text-green-700 mb-4">{success}</p>
@@ -106,14 +122,14 @@ export default function SaveAccount() {
     <div className="border border-gray-200 rounded p-4 mb-6 max-w-sm">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-medium">
-          {mode === 'claim' ? 'Save your account' : 'Log in'}
+          {mode === 'claim' ? 'Save your account' : mode === 'forgot' ? 'Reset your password' : 'Log in'}
         </h2>
         <button onClick={() => { setMode(null); setError(null); }} className="text-gray-400 text-xs">
           ✕
         </button>
       </div>
 
-      <form onSubmit={mode === 'claim' ? handleClaim : handleLogin} className="space-y-2">
+      <form onSubmit={mode === 'claim' ? handleClaim : mode === 'forgot' ? handleForgot : handleLogin} className="space-y-2">
         <input
           type="email"
           required
@@ -122,14 +138,14 @@ export default function SaveAccount() {
           placeholder="Email"
           className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
         />
-        <input
+        {mode !== 'forgot' && <input
           type="password"
           required
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Password"
           className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-        />
+        />}
         {mode === 'claim' && (
           <input
             type="password"
@@ -148,9 +164,19 @@ export default function SaveAccount() {
           disabled={submitting}
           className="text-sm bg-gray-900 text-white px-3 py-1.5 rounded w-full disabled:bg-gray-300"
         >
-          {submitting ? 'Please wait…' : mode === 'claim' ? 'Save account' : 'Log in'}
+          {submitting ? 'Please wait…' : mode === 'claim' ? 'Save account' : mode === 'forgot' ? 'Send reset link' : 'Log in'}
         </button>
       </form>
+
+      {mode === 'login' && (
+        <button
+          type="button"
+          onClick={() => { setMode('forgot'); setError(null); setPassword(''); }}
+          className="text-xs text-gray-600 underline mt-2"
+        >
+          Forgot password?
+        </button>
+      )}
 
       {mode === 'login' && (
         <p className="text-xs text-gray-400 mt-2">

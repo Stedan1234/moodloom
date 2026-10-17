@@ -3,7 +3,8 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { pool } from '../db/pool.js';
 import { signToken, requireAuth } from '../middleware/auth.js';
-import { authLimiter, pairLimiter } from '../middleware/rateLimit.js';
+import { authLimiter, pairLimiter, resetLimiter } from '../middleware/rateLimit.js';
+import { sendMail } from '../services/mailer.js';
 
 export const authRouter = Router();
 
@@ -91,6 +92,89 @@ authRouter.post('/login', authLimiter, async (req, res) => {
 
   const token = signToken(user.id);
   res.json({ token });
+});
+
+const RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * POST /auth/forgot-password
+ * Emails a single-use reset link. ALWAYS responds with the same generic
+ * success whether or not the email has an account, so this can't be used to
+ * discover which emails are registered.
+ */
+authRouter.post('/forgot-password', resetLimiter, async (req, res) => {
+  const email = typeof req.body.email === 'string' ? req.body.email.trim() : '';
+  if (!email) {
+    return res.status(400).json({ error: 'email is required' });
+  }
+
+  const result = await pool.query(
+    'SELECT id FROM users WHERE email = $1 AND password_hash IS NOT NULL',
+    [email]
+  );
+  const user = result.rows[0];
+  if (user) {
+    const token = crypto.randomBytes(32).toString('hex');
+    await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [user.id]);
+    await pool.query(
+      'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+      [user.id, hashToken(token), new Date(Date.now() + RESET_TTL_MS)]
+    );
+    const appUrl = (process.env.APP_URL || 'http://localhost:5173').replace(/\/$/, '');
+    try {
+      await sendMail({
+        to: email,
+        subject: 'Reset your Moodloom password',
+        text:
+          `Someone asked to reset the password for this Moodloom account.\n\n` +
+          `Open this link to choose a new password (valid for 1 hour, one use):\n` +
+          `${appUrl}/?reset_token=${token}\n\n` +
+          `If that wasn't you, ignore this email — your password stays the same.`,
+      });
+    } catch (err) {
+      // Don't leak delivery failures to the caller (it would reveal the account exists).
+      console.error('Failed to send reset email:', err.message);
+    }
+  }
+
+  res.json({ ok: true, message: 'If an account exists for that email, a reset link is on its way.' });
+});
+
+/**
+ * POST /auth/reset-password
+ * Redeems a reset token and sets a new password. The token is consumed
+ * atomically (UPDATE ... RETURNING) so it can't be used twice, even
+ * concurrently. All of the user's other tokens are invalidated too.
+ */
+authRouter.post('/reset-password', resetLimiter, async (req, res) => {
+  const { token, password } = req.body;
+  if (!token || typeof token !== 'string' || !password) {
+    return res.status(400).json({ error: 'token and password are required' });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'password must be at least 8 characters' });
+  }
+
+  const consumed = await pool.query(
+    `UPDATE password_reset_tokens SET used_at = now()
+     WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+     RETURNING user_id`,
+    [hashToken(token)]
+  );
+  if (consumed.rows.length === 0) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.' });
+  }
+
+  const userId = consumed.rows[0].user_id;
+  const passwordHash = await bcrypt.hash(password, 10);
+  await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, userId]);
+  await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [userId]);
+
+  res.json({ token: signToken(userId) });
 });
 
 // Unambiguous alphabet (no 0/O, 1/I/L) so a human can read a code aloud or

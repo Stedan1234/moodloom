@@ -26,3 +26,14 @@ export const pairLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many pairing attempts. Please wait a few minutes and try again.' },
 });
+
+// /auth/forgot-password and /auth/reset-password: each forgot request can
+// trigger an outgoing email, so cap it tightly per IP to stop the endpoint
+// being used to spam someone's inbox (or to hammer the mail provider).
+export const resetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many reset attempts. Please wait a few minutes and try again.' },
+});

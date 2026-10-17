@@ -150,4 +150,20 @@ export const api = {
     localStorage.setItem(TOKEN_KEY, data.token);
     return data;
   },
+
+  // Always resolves with a generic message whether or not the email has an
+  // account (the server deliberately doesn't reveal which emails exist).
+  forgotPassword: (email) =>
+    rawFetch('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+
+  // Redeems the emailed token, sets the new password, and logs this browser
+  // straight into that account.
+  resetPassword: async (token, password) => {
+    const data = await rawFetch('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
+    });
+    localStorage.setItem(TOKEN_KEY, data.token);
+    return data;
+  },
 };

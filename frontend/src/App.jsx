@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import ProjectList from './components/ProjectList';
 import ProjectView from './components/ProjectView';
+import ResetPassword from './components/ResetPassword';
 
 function getProjectIdFromUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -30,6 +31,11 @@ export default function App() {
   function backToList() {
     window.history.pushState({}, '', window.location.pathname);
     setOpenProjectId(null);
+  }
+
+  const resetToken = new URLSearchParams(window.location.search).get('reset_token');
+  if (resetToken) {
+    return <ResetPassword token={resetToken} />;
   }
 
   if (openProjectId) {
