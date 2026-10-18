@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import BoardItem from './BoardItem';
+import BoardItem, { itemHasVisual } from './BoardItem';
+import Lightbox from './Lightbox';
 import CategoryTabs from './CategoryTabs';
 import Workspace from './Workspace';
 
@@ -42,6 +43,29 @@ export default function ProjectView({ projectId, onBack }) {
   // confirmed by the server yet — without this, a poll landing in that gap
   // would make a just-deleted item flicker back before the request completes.
   const pendingDeleteIds = useRef(new Set());
+
+  // Which part of the screen the board gets, Spotify-style:
+  //   split     — board and notes side by side (default)
+  //   collapsed — board shrinks to a thin strip so the notes get the room
+  //   expanded  — board goes full screen and covers the notes
+  // Remembered per browser as a convenience only (storage can be unavailable).
+  const [layout, setLayoutState] = useState(() => {
+    try {
+      const saved = localStorage.getItem('moodloom_layout');
+      return ['split', 'collapsed', 'expanded'].includes(saved) ? saved : 'split';
+    } catch {
+      return 'split';
+    }
+  });
+  function setLayout(next) {
+    setLayoutState(next);
+    try {
+      localStorage.setItem('moodloom_layout', next);
+    } catch {
+      // not worth surfacing
+    }
+  }
+  const [openItemId, setOpenItemId] = useState(null);
 
   async function refreshItems() {
     try {
@@ -218,8 +242,21 @@ export default function ProjectView({ projectId, onBack }) {
   const visibleItems =
     activeCategoryId === null ? items || [] : (items || []).filter((item) => item.category_id === activeCategoryId);
 
+  // The lightbox steps through what's currently on screen (the active tab),
+  // skipping items with nothing to enlarge.
+  const navItems = visibleItems.filter(itemHasVisual);
+  const openIndex = openItemId === null ? -1 : navItems.findIndex((i) => i.id === openItemId);
+
+  const gridCols =
+    layout === 'collapsed'
+      ? 'grid-cols-[44px_1fr]'
+      : layout === 'expanded'
+        ? 'grid-cols-[1fr]'
+        : 'grid-cols-[1fr_340px]';
+  const masonryCols = layout === 'expanded' ? 'columns-2 md:columns-3 xl:columns-4' : 'columns-2';
+
   return (
-    <div className="max-w-6xl mx-auto p-6 h-screen flex flex-col">
+    <div className={`${layout === 'expanded' ? 'max-w-none' : 'max-w-6xl'} mx-auto p-6 h-screen flex flex-col`}>
       <div className="flex items-center gap-3 mb-4">
         <button onClick={onBack} className="text-sm text-gray-400 hover:text-gray-700">
           ← Projects
@@ -234,8 +271,53 @@ export default function ProjectView({ projectId, onBack }) {
         <div className="mb-4 rounded bg-gray-50 text-gray-600 text-sm px-3 py-2">{notice}</div>
       )}
 
-      <div className="flex-1 grid grid-cols-[1fr_340px] gap-6 min-h-0">
-        <div className="overflow-y-auto">
+      <div className={`flex-1 grid ${gridCols} gap-6 min-h-0`}>
+        {/* Collapsed: just a slim strip with a way back. The board content
+            stays mounted (hidden) so scroll position and state survive. */}
+        {layout === 'collapsed' && (
+          <button
+            onClick={() => setLayout('split')}
+            title="Show references"
+            className="flex flex-col items-center gap-3 pt-3 border border-gray-200 rounded text-gray-500 hover:bg-gray-50"
+          >
+            <span>»</span>
+            <span className="text-xs [writing-mode:vertical-rl]">
+              References{items ? ` (${items.length})` : ''}
+            </span>
+          </button>
+        )}
+        <div className={`overflow-y-auto ${layout === 'collapsed' ? 'hidden' : ''}`}>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-medium text-gray-700">References</h2>
+            <div className="flex gap-1">
+              {layout === 'expanded' ? (
+                <button
+                  onClick={() => setLayout('split')}
+                  className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1"
+                  title="Back to board + notes"
+                >
+                  ⤡ Restore
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setLayout('collapsed')}
+                    className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1"
+                    title="Collapse the board to give the notes room"
+                  >
+                    « Collapse
+                  </button>
+                  <button
+                    onClick={() => setLayout('expanded')}
+                    className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1"
+                    title="Full-screen board (covers the notes)"
+                  >
+                    ⤢ Expand
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
           {/* Manual-add fallback: the extension is the primary v1 capture path,
               but pasting a URL directly here means the board is still usable
               on a machine without the extension installed. */}
@@ -300,11 +382,12 @@ export default function ProjectView({ projectId, onBack }) {
             <p className="text-gray-400 text-sm">Nothing in this category yet.</p>
           )}
 
-          {/* Bumped from 3 columns to 2 after real dogfooding feedback that
-              references — especially whole-page captures — were too small to
-              actually evaluate. Enlarging any item further is one click away
-              via the ⤢ button (see BoardItem's lightbox). */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* Pinterest-style masonry: every card keeps its image's own
+              proportions (tall stays tall, wide stays wide) and CSS columns
+              pack them together, instead of forcing everything into
+              identical 16:9 boxes. Click any item to open the lightbox,
+              which has prev/next. */}
+          <div className={`${masonryCols} gap-4`}>
             {visibleItems.map((item) => (
               <BoardItem
                 key={item.id}
@@ -312,13 +395,27 @@ export default function ProjectView({ projectId, onBack }) {
                 onDelete={handleDelete}
                 categories={categories}
                 onMoveCategory={handleMoveItemCategory}
+                onOpen={setOpenItemId}
               />
             ))}
           </div>
         </div>
 
-        <Workspace projectId={projectId} />
+        {/* Stays mounted when the board is expanded (just hidden) so an
+            unsaved edit or the editor's undo history isn't thrown away. */}
+        <div className={`min-h-0 ${layout === 'expanded' ? 'hidden' : ''} ${layout === 'collapsed' ? 'w-full max-w-3xl mx-auto' : ''}`}>
+          <Workspace projectId={projectId} />
+        </div>
       </div>
+
+      {openIndex >= 0 && (
+        <Lightbox
+          items={navItems}
+          index={openIndex}
+          onIndexChange={(i) => setOpenItemId(navItems[i].id)}
+          onClose={() => setOpenItemId(null)}
+        />
+      )}
     </div>
   );
 }

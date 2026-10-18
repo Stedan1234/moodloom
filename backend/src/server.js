@@ -31,7 +31,8 @@ if (process.env.TRUST_PROXY) {
 // chrome-extension:// origin (see config/cors.js for why that's safe) —
 // replaces the previous wide-open cors() with no restriction at all.
 app.use(cors(corsOptions()));
-app.use(express.json());
+// 1mb (up from the 100kb default) so long rich-text workspace notes still save.
+app.use(express.json({ limit: '1mb' }));
 
 app.get('/health', (req, res) => {
   res.json({ ok: true, service: 'moodloom-backend' });

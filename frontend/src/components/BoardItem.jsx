@@ -1,19 +1,24 @@
-import { useState } from 'react';
-
 // Renders a single captured reference on the grid. Native rendering per
 // mvp-scope.md: images and video play inline, not just a link-out — except
 // the known v1 Instagram gap (see backend/src/services/mediaDetector.js),
 // which falls back to a link-out card rather than failing.
-export default function BoardItem({ item, onDelete, categories, onMoveCategory }) {
-  const [expanded, setExpanded] = useState(false);
-  const hasVisual =
+// Whether an item has something worth enlarging — also decides which items
+// the lightbox's prev/next arrows step through (see Lightbox.jsx).
+export function itemHasVisual(item) {
+  return Boolean(
     (item.media_type === 'image' && (item.thumbnail_url || item.source_url)) ||
-    (item.media_type === 'link' && item.thumbnail_url) ||
-    (item.media_type === 'video' && item.embed_html);
+      (item.media_type === 'link' && item.thumbnail_url) ||
+      (item.media_type === 'video' && item.embed_html)
+  );
+}
+
+export default function BoardItem({ item, onDelete, categories, onMoveCategory, onOpen }) {
+  const hasVisual = itemHasVisual(item);
+  const openLightbox = () => onOpen(item.id);
 
   return (
     <>
-      <div className="group relative border border-gray-200 rounded overflow-hidden bg-white">
+      <div className="group relative border border-gray-200 rounded overflow-hidden bg-white break-inside-avoid mb-4">
         <button
           onClick={() => onDelete(item.id)}
           className="absolute top-1 right-1 z-10 w-6 h-6 rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
@@ -44,7 +49,7 @@ export default function BoardItem({ item, onDelete, categories, onMoveCategory }
 
         {hasVisual && (
           <button
-            onClick={() => setExpanded(true)}
+            onClick={openLightbox}
             className="absolute top-1 left-1 z-10 w-6 h-6 rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
             title="Enlarge"
           >
@@ -79,9 +84,9 @@ export default function BoardItem({ item, onDelete, categories, onMoveCategory }
           <img
             src={item.thumbnail_url || item.source_url}
             alt={item.title || 'Captured reference'}
-            className="w-full aspect-video object-cover cursor-zoom-in"
+            className="w-full h-auto block cursor-zoom-in"
             loading="lazy"
-            onClick={() => setExpanded(true)}
+            onClick={openLightbox}
           />
         )}
 
@@ -94,7 +99,7 @@ export default function BoardItem({ item, onDelete, categories, onMoveCategory }
             <img
               src={item.thumbnail_url}
               alt={item.title || 'Captured reference'}
-              className="w-full aspect-video object-cover"
+              className="w-full h-auto block"
               loading="lazy"
             />
           </a>
@@ -118,45 +123,6 @@ export default function BoardItem({ item, onDelete, categories, onMoveCategory }
         )}
       </div>
 
-      {expanded && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6"
-          onClick={() => setExpanded(false)}
-        >
-          <button
-            onClick={() => setExpanded(false)}
-            className="absolute top-4 right-4 text-white text-2xl leading-none"
-            title="Close"
-          >
-            ✕
-          </button>
-
-          {item.media_type === 'video' && item.embed_html ? (
-            <div
-              className="w-full max-w-4xl aspect-video [&>iframe]:w-full [&>iframe]:h-full"
-              onClick={(e) => e.stopPropagation()}
-              dangerouslySetInnerHTML={{ __html: item.embed_html }}
-            />
-          ) : (
-            <img
-              src={item.thumbnail_url || item.source_url}
-              alt={item.title || 'Captured reference'}
-              className="max-w-full max-h-full object-contain"
-              onClick={(e) => e.stopPropagation()}
-            />
-          )}
-
-          <a
-            href={item.source_url}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white text-sm underline bg-black/50 px-3 py-1 rounded"
-          >
-            Open original
-          </a>
-        </div>
-      )}
     </>
   );
 }
