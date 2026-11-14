@@ -1,194 +1,124 @@
-const pairingView = document.getElementById('pairing-view');
-const pairingCodeInput = document.getElementById('pairing-code-input');
-const pairBtn = document.getElementById('pair-btn');
-const pairingStatus = document.getElementById('pairing-status');
+import { api, disconnect, getSettings, pair, rememberLast, DEFAULT_SERVER } from './api.js';
 
-const captureView = document.getElementById('capture-view');
-const pagePreview = document.getElementById('page-preview');
-const projectSelect = document.getElementById('project-select');
-const newProjectInput = document.getElementById('new-project-name');
-const categorySelect = document.getElementById('category-select');
-const captureBtn = document.getElementById('capture-btn');
-const status = document.getElementById('status');
-const unpairLink = document.getElementById('unpair-link');
+const $ = (id) => document.getElementById(id);
+const NEW = '__new__';
+let tab = null;
 
-const NEW_PROJECT_VALUE = '__new__';
-
-let currentTab = null;
-
-function setStatus(el, message, kind) {
-  el.textContent = message;
-  el.className = kind || '';
+function status(message, kind = 'ok') {
+  const el = $('status');
+  el.hidden = !message;
+  el.textContent = message || '';
+  el.className = `status ${kind}`;
 }
 
-async function showPairingView() {
-  captureView.style.display = 'none';
-  pairingView.style.display = 'block';
-  pairingCodeInput.value = '';
-  pairingCodeInput.focus();
+function option(value, label) {
+  const o = document.createElement('option');
+  o.value = String(value);
+  o.textContent = label; // textContent: project names are never parsed as HTML
+  return o;
 }
 
-async function showCaptureView() {
-  pairingView.style.display = 'none';
-  captureView.style.display = 'block';
-  await initCapture();
+async function showPairing(message) {
+  $('capture').hidden = true;
+  $('disconnect').hidden = true;
+  $('pairing').hidden = false;
+  const { server } = await getSettings();
+  $('server').value = server === DEFAULT_SERVER ? '' : server;
+  if (message) status(message, 'error');
+  $('code').focus();
 }
 
-pairBtn.addEventListener('click', async () => {
-  const code = pairingCodeInput.value.trim();
-  if (!code) {
-    setStatus(pairingStatus, 'Enter the code shown in the web app', 'error');
-    return;
-  }
-  pairBtn.disabled = true;
-  setStatus(pairingStatus, 'Connecting…');
+async function loadCategories(projectId, selected) {
+  const select = $('category');
+  select.replaceChildren(option('', 'Loose (no thread)'));
+  select.disabled = projectId === NEW;
+  if (projectId === NEW) return;
   try {
-    await api.pair(code);
-    setStatus(pairingStatus, '');
-    await showCaptureView();
-  } catch (err) {
-    setStatus(pairingStatus, err.message, 'error');
-  } finally {
-    pairBtn.disabled = false;
-  }
-});
-
-unpairLink.addEventListener('click', async () => {
-  await api.unpair();
-  await showPairingView();
-});
-
-async function initCapture() {
-  // Grab the active tab's URL/title via the `activeTab` permission — this is
-  // the whole point: capture what's on screen right now, no manual pasting.
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  currentTab = tab;
-  pagePreview.textContent = tab?.title ? `${tab.title}\n${tab.url}` : tab?.url || 'No page detected';
-
-  try {
-    const projects = await api.listProjects();
-    projectSelect.innerHTML = '';
-
-    for (const project of projects) {
-      const option = document.createElement('option');
-      option.value = project.id;
-      option.textContent = project.name;
-      projectSelect.appendChild(option);
-    }
-
-    const newOption = document.createElement('option');
-    newOption.value = NEW_PROJECT_VALUE;
-    newOption.textContent = '+ New project…';
-    projectSelect.appendChild(newOption);
-
-    // If there are no existing projects yet, jump straight to "new project"
-    // mode instead of showing an empty, confusing dropdown.
-    if (projects.length === 0) {
-      projectSelect.value = NEW_PROJECT_VALUE;
-      newProjectInput.style.display = 'block';
-      setCategoryOptions([], { disabled: true });
-    } else {
-      await loadCategoriesFor(projectSelect.value);
-    }
-
-    captureBtn.disabled = false;
-  } catch (err) {
-    if (err.message === 'NOT_PAIRED') {
-      await showPairingView();
-      return;
-    }
-    setStatus(status, err.message, 'error');
-  }
-}
-
-// Populates the category dropdown for a given project, or resets it to just
-// "Uncategorized" (disabled) when there's no real project yet to draw
-// categories from — i.e. while "+ New project…" is selected, since that
-// project doesn't exist until Add to board is actually clicked.
-function setCategoryOptions(categories, { disabled } = {}) {
-  categorySelect.innerHTML = '<option value="">Uncategorized</option>';
-  for (const category of categories) {
-    const option = document.createElement('option');
-    option.value = category.id;
-    option.textContent = category.name;
-    categorySelect.appendChild(option);
-  }
-  categorySelect.disabled = Boolean(disabled);
-}
-
-async function loadCategoriesFor(projectId) {
-  try {
-    const categories = await api.listCategories(projectId);
-    setCategoryOptions(categories);
+    for (const c of await api.categories(projectId)) select.appendChild(option(c.id, c.name));
+    if (selected && [...select.options].some((o) => o.value === String(selected))) select.value = String(selected);
   } catch {
-    // Non-fatal — worst case, this capture just goes in as Uncategorized.
-    setCategoryOptions([]);
+    /* threads are optional; saving still works without them */
   }
 }
 
-projectSelect.addEventListener('change', async () => {
-  const isNewProject = projectSelect.value === NEW_PROJECT_VALUE;
-  newProjectInput.style.display = isNewProject ? 'block' : 'none';
-  if (isNewProject) {
-    setCategoryOptions([], { disabled: true });
-  } else {
-    await loadCategoriesFor(projectSelect.value);
-  }
-});
+async function showCapture() {
+  $('pairing').hidden = true;
+  $('capture').hidden = false;
+  $('disconnect').hidden = false;
 
-captureBtn.addEventListener('click', async () => {
-  if (!currentTab?.url) {
-    setStatus(status, 'No page URL to capture', 'error');
-    return;
-  }
+  [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const saveable = /^https?:\/\//i.test(tab?.url || '');
+  $('page-title').textContent = tab?.title || 'This page';
+  $('page-url').textContent = tab?.url || '';
+  $('save-button').disabled = !saveable;
+  if (!saveable) status('This kind of page can’t be saved. Open a normal web page and try again.', 'error');
 
-  captureBtn.disabled = true;
-  setStatus(status, 'Adding…');
-
+  let projects;
   try {
-    let projectId = projectSelect.value;
-
-    if (projectId === NEW_PROJECT_VALUE) {
-      const name = newProjectInput.value.trim();
-      if (!name) {
-        setStatus(status, 'Enter a name for the new project', 'error');
-        captureBtn.disabled = false;
-        return;
-      }
-      const project = await api.createProject(name);
-      projectId = project.id;
-    }
-
-    // categorySelect is disabled (and forced to "Uncategorized") whenever a
-    // brand-new project was just created, since that project has no
-    // categories to show until after this request completes.
-    const categoryId = categorySelect.disabled ? '' : categorySelect.value;
-    const result = await api.captureItem(projectId, currentTab.url, currentTab.title, categoryId);
-    // The backend de-dupes by URL — clicking "Add to board" twice (or the
-    // popup re-firing before the first request finished) no longer creates
-    // a second board item, it just returns the one already there.
-    setStatus(
-      status,
-      result.alreadyOnBoard ? 'Already on this board' : 'Added to board ✓',
-      'success'
-    );
+    projects = (await api.projects()).filter((p) => p.role !== 'viewer');
   } catch (err) {
-    if (err.message === 'NOT_PAIRED') {
-      await showPairingView();
-      return;
-    }
-    setStatus(status, err.message, 'error');
+    if (err.status === 401) return showPairing('This browser was signed out. Pair it again with a new code.');
+    return status(err.message, 'error');
+  }
+  const { last } = await getSettings();
+  const select = $('project');
+  select.replaceChildren(...projects.map((p) => option(p.id, p.name)), option(NEW, 'A new project…'));
+  select.value = projects.some((p) => String(p.id) === String(last.projectId)) ? String(last.projectId) : projects.length ? String(projects[0].id) : NEW;
+  $('new-project').hidden = select.value !== NEW;
+  await loadCategories(select.value, last.categoryId);
+}
+
+$('project').addEventListener('change', async (e) => {
+  $('new-project').hidden = e.target.value !== NEW;
+  if (e.target.value === NEW) $('new-project').focus();
+  await loadCategories(e.target.value);
+});
+
+$('pairing').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  status('');
+  $('pair-button').disabled = true;
+  try {
+    await pair($('server').value, $('code').value.trim().toUpperCase());
+    $('code').value = '';
+    await showCapture();
+  } catch (err) {
+    status(err.message, 'error');
   } finally {
-    captureBtn.disabled = false;
+    $('pair-button').disabled = false;
   }
 });
 
-async function init() {
-  if (await api.isPaired()) {
-    await showCaptureView();
-  } else {
-    await showPairingView();
+$('capture').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  status('');
+  const button = $('save-button');
+  button.disabled = true;
+  try {
+    let projectId = $('project').value;
+    if (projectId === NEW) {
+      const name = $('new-project').value.trim();
+      if (!name) throw new Error('Give the new project a name.');
+      projectId = String((await api.createProject(name)).id);
+    }
+    const categoryId = $('category').value ? Number($('category').value) : undefined;
+    const result = await api.capture(projectId, { sourceUrl: tab.url, title: tab.title?.slice(0, 300), note: $('note').value.trim() || undefined, categoryId });
+    await rememberLast({ projectId, categoryId: categoryId || null });
+    status(result.alreadyOnBoard ? 'Already on that board.' : 'Saved. It’s on the board.');
+    $('note').value = '';
+    if ($('project').value === NEW) await showCapture();
+  } catch (err) {
+    if (err.status === 401) return showPairing('This browser was signed out. Pair it again with a new code.');
+    status(err.message, 'error');
+  } finally {
+    button.disabled = !/^https?:\/\//i.test(tab?.url || '');
   }
-}
+});
 
-init();
+$('disconnect').addEventListener('click', async () => {
+  await disconnect();
+  status('');
+  await showPairing();
+});
+
+getSettings().then(({ token }) => (token ? showCapture() : showPairing()));

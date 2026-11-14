@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Moodloom — Add to Board",
-  "version": "0.1.0",
-  "description": "Capture the current page as a reference into a Moodloom project, in one click.",
-  "permissions": ["activeTab", "storage"],
+  "name": "Moodloom",
+  "version": "0.3.0",
+  "description": "Save the page, image or link you're looking at straight into a Moodloom project.",
+  "permissions": ["activeTab", "storage", "contextMenus"],
   "host_permissions": ["http://localhost:3001/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "icons": { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Add to Moodloom"
+    "default_title": "Save to Moodloom",
+    "default_icon": { "16": "icon-16.png", "48": "icon-48.png" }
   }
 }
-

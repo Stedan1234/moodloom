@@ -177,7 +177,7 @@ export function ErrorNote({ children }) {
 }
 
 // A colour you can click to copy.
-export function Swatch({ hex, name, pct, size = 'md' }) {
+export function Swatch({ hex, pct, size = 'md' }) {
   const [copied, setCopied] = useState(false)
   const h = size === 'lg' ? 'h-full min-h-16' : size === 'sm' ? 'h-7' : 'h-10'
   return (

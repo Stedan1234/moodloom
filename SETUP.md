@@ -1,97 +1,91 @@
-# Try it yourself — local setup
+# Setting up Moodloom
 
-Everything (backend, frontend, extension) lives in this one repo. This walks through running all three locally so you can try the actual core loop: capture a reference in one click, then design next to it.
+You need **Node.js 20 or newer** and **PostgreSQL 14 or newer**. Commands are the same on Windows (PowerShell), macOS and Linux unless noted.
 
-## 1. Prerequisites
+## 1. Database
 
-- Node.js 22+ (`node --version`)
-- PostgreSQL 16 (`psql --version`) — install via [postgresql.org](https://www.postgresql.org/download/) or `brew install postgresql@16`
-- Chrome (for the extension)
+Create a database and a user for it (once):
 
-## 2. Clone the repo
-
-```bash
-git clone https://github.com/Stedan1234/moodloom.git
-cd moodloom
+```sql
+CREATE USER moodloom WITH PASSWORD 'choose-a-password';
+CREATE DATABASE moodloom OWNER moodloom;
 ```
 
-## 3. Create the local database
-
-With Postgres running:
-
-```bash
-createdb moodloom
-psql moodloom -c "CREATE USER moodloom WITH PASSWORD 'moodloom_dev' CREATEDB;"
-psql moodloom -c "GRANT ALL PRIVILEGES ON DATABASE moodloom TO moodloom;"
-```
-
-Use whatever password you like — just make sure it matches the `DATABASE_URL` you set in the next step.
-
-## 4. Backend
+## 2. API
 
 ```bash
 cd backend
-cp .env.example .env   # edit DATABASE_URL to match your local Postgres user/password
-```
-
-Then edit `.env` and generate a real `JWT_SECRET` (the server refuses to start with the placeholder value):
-
-```bash
-node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-```
-
-Paste the output in as `JWT_SECRET`, then:
-
-```bash
 npm install
-npm run migrate        # creates the tables
-npm run dev
+cp .env.example .env        # Windows: copy .env.example .env
 ```
 
-You should see `Moodloom backend listening on http://localhost:3001`. Leave this running in its own terminal tab.
+Edit `.env`:
 
-## 5. Frontend
+- `DATABASE_URL=postgresql://moodloom:choose-a-password@localhost:5432/moodloom`
+- `JWT_SECRET=` a long random string. Generate one with
+  `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
+  The server refuses to start with the placeholder.
 
-In a new terminal tab:
+Then:
+
+```bash
+npm run migrate     # creates or updates the tables; safe to run any time
+npm start           # leave this running
+```
+
+`http://localhost:3001/api/health` should answer `{"ok":true,...}`.
+
+**Every time you pull new code**, run `npm install` and `npm run migrate` again before `npm start`.
+
+## 3. Web app
+
+In a second terminal:
 
 ```bash
 cd frontend
-cp .env.example .env   # defaults to http://localhost:3001, fine as-is
 npm install
 npm run dev
 ```
 
-Open the printed URL (usually `http://localhost:5173`) in Chrome — you should see the empty Moodloom project list.
+Open `http://localhost:5173`. The dev server passes `/api` and `/uploads` through to the API, so there is nothing else to configure.
 
-## 6. Load the capture extension
+## 4. Browser extension (Chrome or Edge)
 
-1. Go to `chrome://extensions`
-2. Turn on **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `moodloom/extension` folder
+1. Go to `chrome://extensions`, switch on **Developer mode**, choose **Load unpacked**, and pick the `extension/` folder.
+2. In Moodloom, open **Account → Browser extension → Get a pairing code**.
+3. Click the Moodloom icon in the browser toolbar and type the code. Leave the address blank when Moodloom runs on this computer.
 
-A plain "Add to Moodloom" icon appears in your toolbar. No branding yet — that's deliberate; visual identity is a later phase, after this loop is validated.
+After pulling an update, press the reload arrow on the extension's card in `chrome://extensions`.
 
-## 7. Try the real test
+## 5. Optional extras
 
-Go to any page with a reference you'd actually use for a project — a YouTube video, a Dribbble shot, an Instagram post, anything. Click the extension icon, create a new project (or pick one), hit **Add to board**.
+| What | How |
+|---|---|
+| Demo project with drawn references | `cd backend && npm run demo:seed`, then log in as `demo@moodloom.test` / `moodloom-demo` |
+| Direction notes (AI) | Put a key from console.anthropic.com in `ANTHROPIC_API_KEY`, restart the API, then switch it on per project under **Direction** |
+| Search by description (CLIP) | `npm install @huggingface/transformers` in `backend/`, set `AI_EMBEDDER=clip`. Downloads about 350 MB on first use. Not yet tested end to end. |
+| Real password-reset emails | Fill in the `SMTP_*` settings. Without them the reset link is printed in the API's console. |
+| Forgot your own local password | `npm run reset-password -- you@example.com NewPassword123` |
+| Give an account the Pro plan | `npm run set-plan -- you@example.com pro` |
 
-Open the frontend, click into that project, and confirm the reference shows up — video should play inline, images should render inline, other links show as a card.
+## 6. Tests
 
-## 8. Try the side-by-side workspace
+The tests use their own database so they never touch your data:
 
-With the board open, type into the **Workspace** panel on the right — notes, a color direction, anything. It autosaves as you type. Reload the page and confirm both the board items and your notes are still there.
+```sql
+CREATE DATABASE moodloom_test OWNER moodloom;
+```
 
-That reload-and-persist check is the whole point: this is the actual core loop the MVP exists to prove — find a reference, one click, it's sitting there structured and ready when you go to design, with no tab-switching in between.
+```bash
+cd backend
+TEST_DATABASE_URL=postgresql://moodloom:choose-a-password@localhost:5432/moodloom_test npm test
+# PowerShell: $env:TEST_DATABASE_URL="postgresql://..."; npm test
+```
 
-## Known limitations (v1, by design)
+## Troubleshooting
 
-- No visual/brand identity yet — this is a functional prototype (see `mvp-scope.md` for what's deliberately deferred to v2)
-- Instagram links save fine but don't render an inline embed yet (their oEmbed API needs Meta app review — flagged in `backend/src/services/mediaDetector.js`)
-- Board layout is a fixed grid, not freeform — a deliberate v1 decision (see `mvp-scope.md`)
-
-## Security notes
-
-- CORS is now locked to the origins listed in `ALLOWED_ORIGINS` (plus the browser extension, which is always allowed — see `backend/src/config/cors.js`). Add your deployed frontend's URL there before hosting this anywhere but localhost.
-- The auth endpoints (`/auth/anonymous`, `/auth/login`, `/auth/claim`, `/auth/pairing-code`, `/auth/pair`) are rate-limited per IP (see `backend/src/middleware/rateLimit.js`) to blunt scripted abuse and pairing-code brute-force attempts.
-- The server refuses to start without a real `JWT_SECRET` — see step 4 above.
+- **"Can't reach Moodloom" in the web app**: the API isn't running. Start it in `backend/` and leave that terminal open.
+- **Server won't start, mentions JWT_SECRET**: set a real secret in `.env`.
+- **Tables or columns missing after a pull**: run `npm run migrate`.
+- **`sharp` fails to install on Windows**: use a current Node LTS (20 or 22); sharp ships prebuilt binaries for those.
+- **Extension says it can't reach the server**: check the address typed at pairing; it must be the API's address (`http://localhost:3001` locally), not the web app's.

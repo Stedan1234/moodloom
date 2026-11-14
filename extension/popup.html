@@ -1,119 +1,72 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Add to Moodloom</title>
-  <style>
-    /* Deliberately plain — this is a functional capture prototype, not the
-       branded product. Real visual identity is Phase 4 (Brand & Identity)
-       work, which comes after this core loop is validated. */
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      width: 280px;
-      padding: 12px;
-      margin: 0;
-    }
-    h1 {
-      font-size: 14px;
-      margin: 0 0 10px;
-    }
-    p {
-      font-size: 12px;
-      color: #444;
-      margin: 0 0 10px;
-    }
-    label {
-      display: block;
-      font-size: 12px;
-      color: #444;
-      margin-bottom: 4px;
-    }
-    select, input, button {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 6px;
-      margin-bottom: 10px;
-      font-size: 13px;
-    }
-    #pairing-code-input {
-      text-align: center;
-      letter-spacing: 2px;
-      font-family: monospace;
-      text-transform: uppercase;
-    }
-    .page-preview {
-      font-size: 11px;
-      color: #666;
-      margin-bottom: 10px;
-      word-break: break-all;
-    }
-    button {
-      cursor: pointer;
-      background: #1a1a1a;
-      color: white;
-      border: none;
-      border-radius: 4px;
-    }
-    button:disabled {
-      background: #999;
-      cursor: not-allowed;
-    }
-    #status {
-      font-size: 12px;
-      margin-top: 6px;
-    }
-    #status.success { color: #1a7d3a; }
-    #status.error { color: #c0392b; }
-    #new-project-name {
-      display: none;
-    }
-    #unpair-link {
-      background: none;
-      color: #999;
-      text-decoration: underline;
-      font-size: 11px;
-      width: auto;
-      padding: 0;
-      margin: 8px 0 0;
-    }
-  </style>
-</head>
-<body>
-  <h1>Add to Moodloom</h1>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Moodloom</title>
+    <style>
+      :root { --wall: #e7e9e5; --paper: #fcfcfa; --ink: #16201d; --mute: #5c6762; --line: #c9cec7; --spruce: #17332d; --weld: #f0b90b; --weld-soft: #fbe9a9; --madder: #b83f27; }
+      * { box-sizing: border-box; }
+      body { margin: 0; width: 340px; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--wall); }
+      header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 8px; }
+      .brand { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 16px; letter-spacing: -0.02em; }
+      main { padding: 4px 14px 14px; }
+      label { display: block; font-weight: 600; font-size: 12.5px; margin: 10px 0 4px; }
+      input, select, textarea { width: 100%; font: inherit; color: inherit; background: var(--paper); border: 1.5px solid var(--line); border-radius: 8px; padding: 7px 9px; }
+      input:focus, select:focus, textarea:focus { outline: none; border-color: var(--spruce); box-shadow: 0 0 0 3px rgba(23, 51, 45, 0.12); }
+      textarea { resize: vertical; min-height: 54px; }
+      button { font: inherit; cursor: pointer; border-radius: 8px; border: 1.5px solid transparent; padding: 8px 12px; font-weight: 600; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .primary { background: var(--spruce); color: var(--paper); width: 100%; margin-top: 12px; }
+      .primary:hover:not(:disabled) { background: #2b5247; }
+      .link { background: none; border: 0; padding: 0; color: var(--mute); text-decoration: underline; font-weight: 400; font-size: 12.5px; }
+      .page { background: var(--paper); border-radius: 6px; padding: 8px 10px; box-shadow: 0 1px 0 rgba(22, 32, 29, 0.06), 0 2px 6px rgba(22, 32, 29, 0.07); }
+      .page b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .page span { display: block; color: var(--mute); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .hint { color: var(--mute); font-size: 12.5px; margin: 6px 0 0; }
+      .status { margin-top: 10px; padding: 7px 10px; border-radius: 8px; font-size: 13px; }
+      .status.ok { background: var(--weld-soft); }
+      .status.error { background: #f6dcd5; color: #7a2413; }
+      .code { letter-spacing: 0.2em; text-transform: uppercase; font-weight: 700; font-size: 17px; text-align: center; }
+      [hidden] { display: none !important; }
+      :focus-visible { outline: 2px solid var(--spruce); outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="brand">
+        <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden="true"><path d="M2 16C6 6 10 6 16 16s10 10 14 0" fill="none" stroke="#f0b90b" stroke-width="4.2" stroke-linecap="round"/><g stroke="#17332d" stroke-width="4.2" stroke-linecap="round"><path d="M8 4v8.2M8 19.5V28M16 4v24M24 4v8.5M24 19.8V28"/></g><path d="M12.6 10.4c1.2 1.6 2.2 3.4 3.4 5.6s2.3 4 3.5 5.6" fill="none" stroke="#f0b90b" stroke-width="4.2"/></svg>
+        moodloom
+      </span>
+      <button id="disconnect" class="link" hidden>Disconnect</button>
+    </header>
+    <main>
+      <!-- Pairing: shown until this browser is linked to an account -->
+      <form id="pairing" hidden>
+        <p class="hint" style="margin-top: 0">In Moodloom, open <b>Account → Browser extension</b> and get a pairing code. Type it here to link this browser to your account.</p>
+        <label for="code">Pairing code</label>
+        <input id="code" class="code" maxlength="8" autocomplete="off" spellcheck="false" required />
+        <label for="server">Moodloom address</label>
+        <input id="server" placeholder="http://localhost:3001" autocomplete="off" spellcheck="false" />
+        <p class="hint">Leave as it is if Moodloom runs on this computer.</p>
+        <button class="primary" id="pair-button">Link this browser</button>
+      </form>
 
-  <!-- Shown until the extension is paired to a Moodloom account. Replaces
-       the old behavior of silently creating its own separate anonymous
-       account (see api.js for why that was wrong). -->
-  <div id="pairing-view">
-    <p>
-      Open Moodloom in the browser, click "Connect browser extension," and
-      enter the code it shows you here:
-    </p>
-    <input type="text" id="pairing-code-input" placeholder="CODE" maxlength="8" />
-    <button id="pair-btn">Connect</button>
-    <div id="pairing-status"></div>
-  </div>
+      <!-- Capture: the page in front of you, into a project -->
+      <form id="capture" hidden>
+        <div class="page"><b id="page-title"></b><span id="page-url"></span></div>
+        <label for="project">Project</label>
+        <select id="project"></select>
+        <input id="new-project" placeholder="Name the new project" maxlength="120" hidden style="margin-top: 6px" />
+        <label for="category">Thread</label>
+        <select id="category"></select>
+        <label for="note">Why you’re saving it (optional)</label>
+        <textarea id="note" maxlength="5000"></textarea>
+        <button class="primary" id="save-button">Save to board</button>
+        <p class="hint">Right-click any image or link and choose “Save to Moodloom” to send it to this project without opening this.</p>
+      </form>
 
-  <!-- Shown once paired: the normal capture UI. -->
-  <div id="capture-view" style="display: none">
-    <div class="page-preview" id="page-preview">Loading current page…</div>
-
-    <label for="project-select">Project</label>
-    <select id="project-select"></select>
-
-    <input type="text" id="new-project-name" placeholder="New project name" />
-
-    <label for="category-select">Category (optional)</label>
-    <select id="category-select">
-      <option value="">Uncategorized</option>
-    </select>
-
-    <button id="capture-btn" disabled>Add to board</button>
-    <div id="status"></div>
-    <button id="unpair-link">Disconnect this extension</button>
-  </div>
-
-  <script src="api.js"></script>
-  <script src="popup.js"></script>
-</body>
+      <div id="status" class="status" role="status" hidden></div>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
 </html>

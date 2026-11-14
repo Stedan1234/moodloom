@@ -1,82 +1,81 @@
-// Thin API client. Per mvp-scope.md, the extension should stay as thin as
-// possible — it captures and hands off, it doesn't duplicate app logic.
-// API_BASE points at local dev for now; swap this for the deployed backend
-// URL (and add that origin to manifest.json's host_permissions) before
-// dogfooding from outside this machine.
-const API_BASE = 'http://localhost:3001';
+// Talks to a Moodloom server on behalf of the extension.
+//
+// The extension never creates an account of its own. It is paired once with
+// the account the web app is using (Account → Browser extension → pairing
+// code), and from then on holds a token for that same account. The server
+// address is whatever was typed when pairing, so the same extension works
+// against a local server and a deployed one.
+export const DEFAULT_SERVER = 'http://localhost:3001';
 
-// IMPORTANT: this no longer auto-creates its own anonymous account. Doing
-// that silently was the root cause of a real bug found during real-machine
-// testing — the extension and the web app each created a SEPARATE anonymous
-// user, so a capture made here never showed up there. Now the extension has
-// no identity of its own: it must be paired to the web app's account via a
-// short-lived code (see /auth/pair on the backend, and popup.js for the UI).
-async function getToken() {
-  const stored = await chrome.storage.local.get('token');
-  return stored.token || null;
+export async function getSettings() {
+  const { moodloom_server, moodloom_token, moodloom_last } = await chrome.storage.local.get(['moodloom_server', 'moodloom_token', 'moodloom_last']);
+  return { server: moodloom_server || DEFAULT_SERVER, token: moodloom_token || null, last: moodloom_last || {} };
 }
 
-async function setToken(token) {
-  await chrome.storage.local.set({ token });
-}
-
-async function clearToken() {
-  await chrome.storage.local.remove('token');
-}
-
-async function pair(code) {
-  const res = await fetch(`${API_BASE}/auth/pair`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${res.status})`);
+export function normaliseServer(input) {
+  const raw = (input || '').trim().replace(/\/+$/, '');
+  if (!raw) return DEFAULT_SERVER;
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  const url = new URL(withScheme); // throws on nonsense, which the popup reports
+  if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+    throw new Error('Use an https:// address. Plain http is only allowed for localhost.');
   }
-  const data = await res.json();
-  await setToken(data.token);
-  return data.token;
+  return url.origin;
 }
 
-async function apiFetch(path, options = {}) {
-  const token = await getToken();
+async function parse(res) {
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(body.error || `The server answered ${res.status}.`);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+export async function pair(serverInput, code) {
+  const server = normaliseServer(serverInput);
+  let res;
+  try {
+    res = await fetch(`${server}/api/auth/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+  } catch {
+    throw new Error(`Can’t reach ${server}. Check the address, and that Moodloom is running.`);
+  }
+  const data = await parse(res);
+  await chrome.storage.local.set({ moodloom_server: server, moodloom_token: data.token });
+}
+
+export async function disconnect() {
+  await chrome.storage.local.remove(['moodloom_token', 'moodloom_last']);
+}
+
+export async function rememberLast(last) {
+  await chrome.storage.local.set({ moodloom_last: last });
+}
+
+async function request(path, options = {}) {
+  const { server, token } = await getSettings();
   if (!token) {
-    throw new Error('NOT_PAIRED');
+    const err = new Error('Not paired with a Moodloom account yet.');
+    err.status = 401;
+    throw err;
   }
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-  });
+  let res;
+  try {
+    res = await fetch(`${server}/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(options.headers || {}) } });
+  } catch {
+    throw new Error(`Can’t reach ${server}. Is Moodloom running?`);
+  }
   if (res.status === 401) {
-    // The token is stale (e.g. server data reset) — clear it so the popup
-    // drops back to the pairing screen instead of failing silently forever.
-    await clearToken();
-    throw new Error('NOT_PAIRED');
+    // Signed out everywhere or password changed: this token is finished.
+    await disconnect();
   }
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${res.status})`);
-  }
-  if (res.status === 204) return null;
-  return res.json();
+  return parse(res);
 }
 
-const api = {
-  isPaired: async () => Boolean(await getToken()),
-  pair,
-  unpair: clearToken,
-  listProjects: () => apiFetch('/projects'),
-  createProject: (name) =>
-    apiFetch('/projects', { method: 'POST', body: JSON.stringify({ name }) }),
-  captureItem: (projectId, sourceUrl, title, categoryId) =>
-    apiFetch(`/projects/${projectId}/items`, {
-      method: 'POST',
-      body: JSON.stringify({ sourceUrl, title, categoryId }),
-    }),
-  listCategories: (projectId) => apiFetch(`/projects/${projectId}/categories`),
+export const api = {
+  projects: () => request('/projects'),
+  createProject: (name) => request('/projects', { method: 'POST', body: JSON.stringify({ name }) }),
+  categories: (projectId) => request(`/projects/${projectId}/categories`),
+  capture: (projectId, data) => request(`/projects/${projectId}/items`, { method: 'POST', body: JSON.stringify(data) }),
 };

@@ -222,23 +222,24 @@ function noteAsText(note) {
     .join('\n')
 }
 
+const Block = ({ title, children }) => (
+  <div>
+    <h4 className="text-sm font-semibold mb-1" style={{ fontFamily: 'var(--font-sans)', letterSpacing: 0 }}>{title}</h4>
+    {children}
+  </div>
+)
+const Bullets = ({ items }) => (
+  <ul className="list-disc pl-5 space-y-1">
+    {items.map((x, i) => (
+      <li key={i}>{x}</li>
+    ))}
+  </ul>
+)
+
 function DirectionNote({ note, itemsById, categories, projectId, canEdit, onDelete }) {
   const toast = useToast()
   const c = note.content
   const scope = note.category_id ? categories.find((x) => x.id === note.category_id)?.name : null
-  const Block = ({ title, children }) => (
-    <div>
-      <h4 className="text-sm font-semibold mb-1" style={{ fontFamily: 'var(--font-sans)', letterSpacing: 0 }}>{title}</h4>
-      {children}
-    </div>
-  )
-  const Bullets = ({ items }) => (
-    <ul className="list-disc pl-5 space-y-1">
-      {items.map((x, i) => (
-        <li key={i}>{x}</li>
-      ))}
-    </ul>
-  )
   return (
     <article className="sheet p-5 sm:p-7">
       <p className="display text-[clamp(1.25rem,2.4vw,1.7rem)] leading-snug max-w-3xl" style={{ fontWeight: 560 }}>
