@@ -82,7 +82,7 @@ All test images are synthetic, generated from a fixed seed with known ground tru
 
 ### 4.2 What the measurements showed that I did not expect
 
-- **Under heavy noise, clustering in RGB beat CIELAB** on getting the swatch count right (83% vs 46%). Noise spreads further in Lab's a/b axes for dark colours, so more spurious clusters survive the merge. Lab is kept because it is better or equal elsewhere and its merge threshold means something perceptually, but the threshold should probably scale with lightness. That is an open improvement, found only because the ablation was run.
+- **Under heavy noise, clustering in RGB beat CIELAB** on getting the swatch count right (83% vs 46%). My working explanation, not yet verified, is that noise spreads further along Lab’s a and b axes for dark colours, so more spurious clusters survive the merge. Lab is kept because it is better or equal elsewhere and its merge threshold means something perceptually, but the threshold should probably scale with lightness. That is an open improvement, found only because the ablation was run.
 - **A plain 8×8 pixel thumbnail is a strong baseline** for top-1 similarity (95.6%). The descriptor wins clearly on ranking quality (mAP 0.79 vs 0.66) and on robustness to layout shifts, but the baseline is a reminder to measure before assuming complexity helps.
 - **Random selection covers nearly as well as farthest-point on average** (coverage 0.346 vs 0.358). Farthest-point's advantage is that it is deterministic and never has a bad draw, not that it is better on average.
 
