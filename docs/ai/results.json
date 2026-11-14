@@ -1,0 +1,428 @@
+{
+  "generatedAt": "2026-11-14T14:49:28.170Z",
+  "machine": "Intel(R) Xeon(R) Processor @ 2.10GHz, 2 cores, Node v22.23.4",
+  "palette": [
+    {
+      "condition": "clean",
+      "method": "Moodloom (Lab k-means++, k=8, merge ΔE<9)",
+      "images": 150,
+      "meanDeltaE": 0,
+      "recall": 1,
+      "shareErrorPts": 0.3,
+      "extraColours": 0,
+      "exactCount": 1,
+      "msPerImage": 8.4
+    },
+    {
+      "condition": "clean",
+      "method": "ablation: cluster in RGB instead of Lab",
+      "images": 150,
+      "meanDeltaE": 0,
+      "recall": 1,
+      "shareErrorPts": 0.3,
+      "extraColours": 0,
+      "exactCount": 1,
+      "msPerImage": 6.3
+    },
+    {
+      "condition": "clean",
+      "method": "ablation: no merge step (k=8 as is)",
+      "images": 150,
+      "meanDeltaE": 0,
+      "recall": 1,
+      "shareErrorPts": 0.3,
+      "extraColours": 0,
+      "exactCount": 1,
+      "msPerImage": 7.5
+    },
+    {
+      "condition": "clean",
+      "method": "ablation: smoothed thumbnail (not nearest)",
+      "images": 150,
+      "meanDeltaE": 0.09,
+      "recall": 1,
+      "shareErrorPts": 0.3,
+      "extraColours": 0.06,
+      "exactCount": 0.94,
+      "msPerImage": 11.2
+    },
+    {
+      "condition": "clean",
+      "method": "baseline: popularity (4-bit RGB bins)",
+      "images": 150,
+      "meanDeltaE": 0,
+      "recall": 1,
+      "shareErrorPts": 0.3,
+      "extraColours": 0,
+      "exactCount": 1,
+      "msPerImage": 3.9
+    },
+    {
+      "condition": "noise σ≈6",
+      "method": "Moodloom (Lab k-means++, k=8, merge ΔE<9)",
+      "images": 150,
+      "meanDeltaE": 0.75,
+      "recall": 0.974,
+      "shareErrorPts": 2.71,
+      "extraColours": 0.63,
+      "exactCount": 0.46,
+      "msPerImage": 26
+    },
+    {
+      "condition": "noise σ≈6",
+      "method": "ablation: cluster in RGB instead of Lab",
+      "images": 150,
+      "meanDeltaE": 0.22,
+      "recall": 0.998,
+      "shareErrorPts": 1.13,
+      "extraColours": 0.18,
+      "exactCount": 0.827,
+      "msPerImage": 27.8
+    },
+    {
+      "condition": "noise σ≈6",
+      "method": "ablation: no merge step (k=8 as is)",
+      "images": 150,
+      "meanDeltaE": 2.4,
+      "recall": 0.946,
+      "shareErrorPts": 16.95,
+      "extraColours": 2.61,
+      "exactCount": 0,
+      "msPerImage": 25.2
+    },
+    {
+      "condition": "noise σ≈6",
+      "method": "ablation: smoothed thumbnail (not nearest)",
+      "images": 150,
+      "meanDeltaE": 0.14,
+      "recall": 1,
+      "shareErrorPts": 0.29,
+      "extraColours": 0.07,
+      "exactCount": 0.927,
+      "msPerImage": 24.2
+    },
+    {
+      "condition": "noise σ≈6",
+      "method": "baseline: popularity (4-bit RGB bins)",
+      "images": 150,
+      "meanDeltaE": 3.37,
+      "recall": 0.925,
+      "shareErrorPts": 22.86,
+      "extraColours": 2.61,
+      "exactCount": 0,
+      "msPerImage": 4.4
+    },
+    {
+      "condition": "JPEG q=60",
+      "method": "Moodloom (Lab k-means++, k=8, merge ΔE<9)",
+      "images": 150,
+      "meanDeltaE": 0.69,
+      "recall": 1,
+      "shareErrorPts": 0.37,
+      "extraColours": 0.05,
+      "exactCount": 0.947,
+      "msPerImage": 8.9
+    },
+    {
+      "condition": "JPEG q=60",
+      "method": "ablation: cluster in RGB instead of Lab",
+      "images": 150,
+      "meanDeltaE": 0.69,
+      "recall": 1,
+      "shareErrorPts": 0.37,
+      "extraColours": 0.08,
+      "exactCount": 0.92,
+      "msPerImage": 6.9
+    },
+    {
+      "condition": "JPEG q=60",
+      "method": "ablation: no merge step (k=8 as is)",
+      "images": 150,
+      "meanDeltaE": 0.69,
+      "recall": 1,
+      "shareErrorPts": 2.61,
+      "extraColours": 0.87,
+      "exactCount": 0.333,
+      "msPerImage": 8.3
+    },
+    {
+      "condition": "JPEG q=60",
+      "method": "ablation: smoothed thumbnail (not nearest)",
+      "images": 150,
+      "meanDeltaE": 0.69,
+      "recall": 1,
+      "shareErrorPts": 0.36,
+      "extraColours": 0.12,
+      "exactCount": 0.88,
+      "msPerImage": 10.8
+    },
+    {
+      "condition": "JPEG q=60",
+      "method": "baseline: popularity (4-bit RGB bins)",
+      "images": 150,
+      "meanDeltaE": 0.67,
+      "recall": 1,
+      "shareErrorPts": 3.15,
+      "extraColours": 0.87,
+      "exactCount": 0.333,
+      "msPerImage": 3.3
+    },
+    {
+      "condition": "noise + JPEG q=40",
+      "method": "Moodloom (Lab k-means++, k=8, merge ΔE<9)",
+      "images": 150,
+      "meanDeltaE": 0.62,
+      "recall": 1,
+      "shareErrorPts": 0.41,
+      "extraColours": 0.14,
+      "exactCount": 0.86,
+      "msPerImage": 10.9
+    },
+    {
+      "condition": "noise + JPEG q=40",
+      "method": "ablation: cluster in RGB instead of Lab",
+      "images": 150,
+      "meanDeltaE": 0.61,
+      "recall": 1,
+      "shareErrorPts": 0.37,
+      "extraColours": 0.12,
+      "exactCount": 0.88,
+      "msPerImage": 10.8
+    },
+    {
+      "condition": "noise + JPEG q=40",
+      "method": "ablation: no merge step (k=8 as is)",
+      "images": 150,
+      "meanDeltaE": 0.69,
+      "recall": 1,
+      "shareErrorPts": 8.54,
+      "extraColours": 2.03,
+      "exactCount": 0.073,
+      "msPerImage": 11.3
+    },
+    {
+      "condition": "noise + JPEG q=40",
+      "method": "ablation: smoothed thumbnail (not nearest)",
+      "images": 150,
+      "meanDeltaE": 0.6,
+      "recall": 1,
+      "shareErrorPts": 0.41,
+      "extraColours": 0.21,
+      "exactCount": 0.793,
+      "msPerImage": 13.3
+    },
+    {
+      "condition": "noise + JPEG q=40",
+      "method": "baseline: popularity (4-bit RGB bins)",
+      "images": 150,
+      "meanDeltaE": 0.63,
+      "recall": 1,
+      "shareErrorPts": 9.86,
+      "extraColours": 2.19,
+      "exactCount": 0.013,
+      "msPerImage": 3.2
+    }
+  ],
+  "similarity": {
+    "dataset": {
+      "images": 432,
+      "classes": 36,
+      "perClass": 12,
+      "seed": 2026
+    },
+    "timing": {
+      "decodeMsPerImage": 4.3,
+      "featureMsPerImage": 1.82,
+      "dims": 230
+    },
+    "retrieval": [
+      {
+        "task": "same style (colour family + structure, 36 classes)",
+        "variant": "classic-v1 (all four blocks)",
+        "chance": 0.028,
+        "top1": 0.935,
+        "precisionAt5": 0.861,
+        "meanAP": 0.792
+      },
+      {
+        "task": "same style (colour family + structure, 36 classes)",
+        "variant": "ablation: colour histogram only",
+        "chance": 0.028,
+        "top1": 0.616,
+        "precisionAt5": 0.522,
+        "meanAP": 0.452
+      },
+      {
+        "task": "same style (colour family + structure, 36 classes)",
+        "variant": "ablation: histogram + layout",
+        "chance": 0.028,
+        "top1": 0.773,
+        "precisionAt5": 0.648,
+        "meanAP": 0.576
+      },
+      {
+        "task": "same style (colour family + structure, 36 classes)",
+        "variant": "ablation: edges only (no colour)",
+        "chance": 0.028,
+        "top1": 0.405,
+        "precisionAt5": 0.311,
+        "meanAP": 0.287
+      },
+      {
+        "task": "same style (colour family + structure, 36 classes)",
+        "variant": "ablation: without edges",
+        "chance": 0.028,
+        "top1": 0.782,
+        "precisionAt5": 0.663,
+        "meanAP": 0.593
+      },
+      {
+        "task": "same style (colour family + structure, 36 classes)",
+        "variant": "baseline: mean colour",
+        "chance": 0.028,
+        "top1": 0.396,
+        "precisionAt5": 0.395,
+        "meanAP": 0.412
+      },
+      {
+        "task": "same style (colour family + structure, 36 classes)",
+        "variant": "baseline: 8x8 pixels",
+        "chance": 0.028,
+        "top1": 0.956,
+        "precisionAt5": 0.79,
+        "meanAP": 0.661
+      },
+      {
+        "task": "same colour family (6 classes)",
+        "variant": "classic-v1 (all four blocks)",
+        "chance": 0.167,
+        "top1": 1,
+        "precisionAt5": 0.982,
+        "meanAP": 0.868
+      },
+      {
+        "task": "same colour family (6 classes)",
+        "variant": "ablation: colour histogram only",
+        "chance": 0.167,
+        "top1": 1,
+        "precisionAt5": 0.996,
+        "meanAP": 0.937
+      },
+      {
+        "task": "same colour family (6 classes)",
+        "variant": "ablation: histogram + layout",
+        "chance": 0.167,
+        "top1": 1,
+        "precisionAt5": 0.991,
+        "meanAP": 0.921
+      },
+      {
+        "task": "same colour family (6 classes)",
+        "variant": "ablation: edges only (no colour)",
+        "chance": 0.167,
+        "top1": 0.407,
+        "precisionAt5": 0.314,
+        "meanAP": 0.192
+      },
+      {
+        "task": "same colour family (6 classes)",
+        "variant": "ablation: without edges",
+        "chance": 0.167,
+        "top1": 1,
+        "precisionAt5": 0.99,
+        "meanAP": 0.925
+      },
+      {
+        "task": "same colour family (6 classes)",
+        "variant": "baseline: mean colour",
+        "chance": 0.167,
+        "top1": 0.887,
+        "precisionAt5": 0.899,
+        "meanAP": 0.821
+      },
+      {
+        "task": "same colour family (6 classes)",
+        "variant": "baseline: 8x8 pixels",
+        "chance": 0.167,
+        "top1": 0.972,
+        "precisionAt5": 0.881,
+        "meanAP": 0.624
+      },
+      {
+        "task": "same structure (6 classes)",
+        "variant": "classic-v1 (all four blocks)",
+        "chance": 0.167,
+        "top1": 0.935,
+        "precisionAt5": 0.877,
+        "meanAP": 0.364
+      },
+      {
+        "task": "same structure (6 classes)",
+        "variant": "ablation: colour histogram only",
+        "chance": 0.167,
+        "top1": 0.616,
+        "precisionAt5": 0.524,
+        "meanAP": 0.216
+      },
+      {
+        "task": "same structure (6 classes)",
+        "variant": "ablation: histogram + layout",
+        "chance": 0.167,
+        "top1": 0.773,
+        "precisionAt5": 0.653,
+        "meanAP": 0.254
+      },
+      {
+        "task": "same structure (6 classes)",
+        "variant": "ablation: edges only (no colour)",
+        "chance": 0.167,
+        "top1": 0.947,
+        "precisionAt5": 0.934,
+        "meanAP": 0.813
+      },
+      {
+        "task": "same structure (6 classes)",
+        "variant": "ablation: without edges",
+        "chance": 0.167,
+        "top1": 0.782,
+        "precisionAt5": 0.668,
+        "meanAP": 0.259
+      },
+      {
+        "task": "same structure (6 classes)",
+        "variant": "baseline: mean colour",
+        "chance": 0.167,
+        "top1": 0.419,
+        "precisionAt5": 0.41,
+        "meanAP": 0.217
+      },
+      {
+        "task": "same structure (6 classes)",
+        "variant": "baseline: 8x8 pixels",
+        "chance": 0.167,
+        "top1": 0.981,
+        "precisionAt5": 0.896,
+        "meanAP": 0.374
+      }
+    ],
+    "selection": {
+      "choose": 10,
+      "from": 432,
+      "farthest-point (used)": {
+        "coverage": 0.358,
+        "families": 6,
+        "structures": 5
+      },
+      "random (mean of 300 draws)": {
+        "coverage": 0.346,
+        "families": 5.12,
+        "structures": 5.02
+      },
+      "first ten (a board added in order)": {
+        "coverage": 0.66,
+        "families": 1,
+        "structures": 1
+      }
+    }
+  }
+}

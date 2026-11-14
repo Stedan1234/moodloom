@@ -9,7 +9,7 @@
     "dev": "node --watch src/server.js",
     "migrate": "node src/db/migrate.js",
     "reset-password": "node src/scripts/resetPassword.js",
-    "test": "node --test --test-concurrency=1 test/",
+    "test": "node --test --test-concurrency=1 --test-reporter=spec \"test/*.test.js\"",
     "set-plan": "node src/scripts/setPlan.js",
     "ai:eval": "node src/scripts/evalAll.js",
     "ai:check-clip": "node src/scripts/checkClip.js"

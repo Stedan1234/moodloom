@@ -138,13 +138,18 @@ export function suggestGroups(items, { maxK = 6, minScore = 0.08, seed = 11 } = 
  * k nearest already-categorised neighbours. Returns null unless one
  * category clearly wins.
  */
-export function suggestCategory(target, labelled, { k = 5, minShare = 0.55, minSimilarity = 0.5 } = {}) {
+export function suggestCategory(target, labelled, { k = 5, minShare = 0.55, minSimilarity = 0.5, minMargin = 0.04 } = {}) {
   if (labelled.length < 3) return null;
-  const neighbours = labelled
+  const scored = labelled
     .map((it) => ({ category: it.category, score: cosine(target, it.vector) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k);
+    .sort((a, b) => b.score - a.score);
+  const neighbours = scored.slice(0, k);
   if (neighbours[0].score < minSimilarity) return null;
+  // If the closest item of some OTHER category is almost as close as the
+  // closest item overall, the item sits between categories: say nothing
+  // rather than let a few hundredths of similarity decide.
+  const rival = scored.find((s) => s.category !== neighbours[0].category);
+  if (rival && neighbours[0].score - rival.score < minMargin) return null;
   const votes = new Map();
   let total = 0;
   for (const nb of neighbours) {
