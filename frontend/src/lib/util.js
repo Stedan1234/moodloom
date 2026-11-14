@@ -10,6 +10,13 @@ export const THREADS = [
   { name: 'verdigris', hex: '#2e8c87' },
   { name: 'logwood', hex: '#6b5ba8' },
 ]
+// A tag always gets the same dye, so 'packaging' is the same colour on every card.
+export function tagTint(tag) {
+  let h = 0
+  for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) >>> 0
+  const hex = THREADS[h % THREADS.length].hex
+  return { background: `${hex}26`, color: '#16201d', boxShadow: `inset 0 0 0 1px ${hex}55` }
+}
 export const threadFor = (index) => THREADS[((index % THREADS.length) + THREADS.length) % THREADS.length].hex
 
 export function formatBytes(bytes) {

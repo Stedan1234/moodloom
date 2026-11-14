@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Download, ExternalLink, FileText, MessageSquareText, Play, Quote, Trash2 } from 'lucide-react'
-import { embedUrl, formatBytes, hostOf, itemLabel, safeHref } from '../lib/util'
+import { embedUrl, formatBytes, hostOf, itemLabel, safeHref, tagTint } from '../lib/util'
 
 // Loads an uploaded font file under a private family name so it can be shown
 // as a specimen. Returns the CSS family, or null until it's ready.
@@ -157,7 +157,7 @@ export default function ItemCard({ item, thread, canEdit, onOpen, onDelete, drag
             {item.tags?.length > 0 && (
               <span className="flex flex-wrap gap-1 mt-1.5">
                 {item.tags.slice(0, 4).map((t) => (
-                  <span key={t} className="chip !text-[11px]">
+                  <span key={t} className="chip !text-[11px]" style={tagTint(t)}>
                     {t}
                   </span>
                 ))}

@@ -3,7 +3,7 @@ import { Copy, Layers, Search, Sparkles, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import { navigate } from '../router'
 import { ErrorNote, Spinner, Swatch, Toggle, useAsync, useToast } from '../ui'
-import { copyText, itemLabel, timeAgo } from '../lib/util'
+import { copyText, itemLabel, tagTint, timeAgo } from '../lib/util'
 
 function Thumb({ item, projectId, size = 'w-14 h-14' }) {
   if (!item) return null
@@ -81,7 +81,7 @@ function Digest({ projectId, categories }) {
           {d.tags.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {d.tags.map((t) => (
-                <span key={t.tag} className="chip">
+                <span key={t.tag} className="chip" style={tagTint(t.tag)}>
                   {t.tag} <span className="text-mute">{t.count}</span>
                 </span>
               ))}

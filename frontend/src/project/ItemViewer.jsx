@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Sparkles, Trash2, X } from 'lucide-react'
 import { api } from '../api'
 import { Spinner, Swatch, useToast } from '../ui'
-import { embedUrl, formatBytes, hostOf, itemLabel, KIND_LABEL, safeHref, threadFor, timeAgo } from '../lib/util'
+import { embedUrl, formatBytes, hostOf, itemLabel, KIND_LABEL, safeHref, tagTint, threadFor, timeAgo } from '../lib/util'
 import { useFontFace } from './ItemCard'
 
 const PdfReader = lazy(() => import('./PdfReader'))
@@ -130,7 +130,7 @@ function TagEditor({ tags, canEdit, onChange }) {
   return (
     <div className="flex flex-wrap gap-1.5 items-center">
       {tags.map((t) => (
-        <span key={t} className="chip">
+        <span key={t} className="chip" style={tagTint(t)}>
           {t}
           {canEdit && (
             <button onClick={() => onChange(tags.filter((x) => x !== t))} aria-label={`Remove tag ${t}`} className="opacity-60 hover:opacity-100">

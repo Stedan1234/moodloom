@@ -6,6 +6,11 @@ import { ErrorNote, Spinner, useAsync, useToast, Wordmark } from '../ui'
 import { itemLabel, KIND_LABEL, timeAgo } from '../lib/util'
 import AuthDialog from '../AuthDialog'
 
+function greeting() {
+  const h = new Date().getHours()
+  return h < 5 ? 'Up late' : h < 12 ? 'Morning' : h < 18 ? 'Afternoon' : 'Evening'
+}
+
 const STAGE_LABEL = { brief: 'Brief', research: 'Research', concepts: 'Concepts', refine: 'Refining', deliver: 'Delivered' }
 
 // Up to four of the project's references, laid out like the corner of a wall.
@@ -172,7 +177,12 @@ export default function Home() {
         )}
 
         <div className="flex flex-wrap items-end justify-between gap-4 mt-4 mb-6">
-          <h1 className="text-[clamp(2rem,4.5vw,3rem)]">Projects</h1>
+          <div>
+            <p className="text-mute mb-1">{greeting()}{account.data?.displayName ? `, ${account.data.displayName.split(' ')[0]}` : ''}.</p>
+            <h1 className="text-[clamp(2rem,4.5vw,3rem)]">
+              Your <span className="swipe">walls</span>
+            </h1>
+          </div>
           <form onSubmit={create} className="flex gap-2 w-full sm:w-auto">
             <input
               className="field sm:w-72"

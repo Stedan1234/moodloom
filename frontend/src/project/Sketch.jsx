@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getStroke } from 'perfect-freehand'
-import { Eraser, Hand, Highlighter, ImagePlus, Minus, PenLine, Pin, Plus, Redo2, Trash2, Type, Undo2 } from 'lucide-react'
+import { Circle, Eraser, Frame, Hand, Highlighter, ImagePlus, Minus, MousePointer2, MoveUpRight, PenLine, Pin, Plus, Redo2, Square, Trash2, Type, Undo2 } from 'lucide-react'
 import { api } from '../api'
 import { Modal, useToast } from '../ui'
 import { itemLabel } from '../lib/util'
@@ -14,11 +14,23 @@ import { itemLabel } from '../lib/util'
 //   { id, type: 'stroke', tool, color, size, points: [[x, y, pressure], …] }
 //   { id, type: 'text', x, y, text, color, size }
 //   { id, type: 'image', x, y, w, h, itemId }
+//   { id, type: 'rect' | 'ellipse' | 'arrow', x, y, w, h, color, size }   (w/h may be negative)
+//   { id, type: 'frame', x, y, w, h, name }   an artboard to lay a screen out in
 
 const INK = '#16201d'
 const BASE_COLORS = [INK, '#c4472e', '#2f5fa8', '#5e8b3a', '#d9a300', '#b5578a']
 const SIZES = [4, 8, 14]
 const uid = () => Math.random().toString(36).slice(2, 10)
+const TYPES = ['stroke', 'text', 'image', 'rect', 'ellipse', 'arrow', 'frame']
+const SHAPES = ['rect', 'ellipse', 'arrow']
+// Artboard sizes worth sketching into, in real pixels.
+const FRAMES = [
+  ['Phone', 390, 844],
+  ['Desktop', 1440, 900],
+  ['Square post', 1080, 1080],
+  ['Story', 1080, 1920],
+  ['A4', 595, 842],
+]
 
 const pathCache = new WeakMap()
 function strokePath(el) {
@@ -64,7 +76,10 @@ function boundsOf(el, ctx) {
     const w = Math.max(...lines.map((l) => ctx.measureText(l).width))
     return { x: el.x, y: el.y, w, h: lines.length * el.size * 1.25 }
   }
-  return { x: el.x, y: el.y, w: el.w, h: el.h }
+  if (el.type === 'frame') return { x: el.x, y: el.y - 22, w: el.w, h: el.h + 22 }
+  // shapes are drawn by dragging in any direction, so w/h can be negative
+  const pad = SHAPES.includes(el.type) ? (el.size || 2) + 4 : 0
+  return { x: Math.min(el.x, el.x + el.w) - pad, y: Math.min(el.y, el.y + el.h) - pad, w: Math.abs(el.w) + pad * 2, h: Math.abs(el.h) + pad * 2 }
 }
 
 function drawElement(ctx, el, images) {
@@ -85,7 +100,47 @@ function drawElement(ctx, el, images) {
       ctx.fillStyle = '#d9dcd6'
       ctx.fillRect(el.x, el.y, el.w, el.h)
     }
+  } else if (el.type === 'frame') {
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(el.x, el.y, el.w, el.h)
+    ctx.strokeStyle = '#c9cec7'
+    ctx.lineWidth = 1.5
+    ctx.strokeRect(el.x, el.y, el.w, el.h)
+    ctx.fillStyle = '#5c6762'
+    ctx.font = '13px "Instrument Sans Variable", sans-serif'
+    ctx.textBaseline = 'alphabetic'
+    ctx.fillText(`${el.name}  ${el.w} × ${el.h}`, el.x, el.y - 7)
+  } else if (SHAPES.includes(el.type)) {
+    ctx.strokeStyle = el.color
+    ctx.lineWidth = Math.max(1.5, el.size * 0.6)
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.beginPath()
+    if (el.type === 'rect') ctx.roundRect(Math.min(el.x, el.x + el.w), Math.min(el.y, el.y + el.h), Math.abs(el.w), Math.abs(el.h), 4)
+    else if (el.type === 'ellipse') ctx.ellipse(el.x + el.w / 2, el.y + el.h / 2, Math.abs(el.w / 2), Math.abs(el.h / 2), 0, 0, Math.PI * 2)
+    else {
+      const x2 = el.x + el.w
+      const y2 = el.y + el.h
+      const angle = Math.atan2(el.h, el.w)
+      const head = Math.min(22, Math.hypot(el.w, el.h) * 0.35) + el.size
+      ctx.moveTo(el.x, el.y)
+      ctx.lineTo(x2, y2)
+      ctx.moveTo(x2 - head * Math.cos(angle - 0.45), y2 - head * Math.sin(angle - 0.45))
+      ctx.lineTo(x2, y2)
+      ctx.lineTo(x2 - head * Math.cos(angle + 0.45), y2 - head * Math.sin(angle + 0.45))
+    }
+    ctx.stroke()
   }
+}
+
+// Layer order: artboards at the back, then references, then everything drawn.
+const layerOf = (el) => (el.type === 'frame' ? 0 : el.type === 'image' ? 1 : 2)
+function drawAll(ctx, list, images) {
+  for (let layer = 0; layer < 3; layer++) for (const el of list) if (layerOf(el) === layer) drawElement(ctx, el, images)
+}
+function moveBy(el, dx, dy) {
+  if (el.type === 'stroke') return { ...el, points: el.points.map(([x, y, p]) => [x + dx, y + dy, p]) }
+  return { ...el, x: el.x + dx, y: el.y + dy }
 }
 
 export default function Sketch({ projectId, items, canEdit, loadItems }) {
@@ -93,7 +148,6 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
   const canvasRef = useRef(null)
   const wrapRef = useRef(null)
   const elements = useRef([])
-  const undone = useRef([])
   const view = useRef({ x: 0, y: 0, zoom: 1 })
   const images = useRef(new Map())
   const drawing = useRef(null)
@@ -102,6 +156,15 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
   const saveTimer = useRef(null)
   const dirty = useRef(false)
   const raf = useRef(0)
+  const selected = useRef(null)
+  // Undo keeps whole snapshots, so it restores deletions and moves, not only the last stroke.
+  const past = useRef([])
+  const future = useRef([])
+  const lastSnapshot = useRef([])
+  const moving = useRef(null)
+  const pendingText = useRef(null)
+  const textRef = useRef(null)
+  const textOpened = useRef(0)
 
   const [tool, setTool] = useState(canEdit ? 'pen' : 'hand')
   const [color, setColor] = useState(INK)
@@ -112,6 +175,7 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
   const [textAt, setTextAt] = useState(null)
   const [picking, setPicking] = useState(false)
   const [pinning, setPinning] = useState(false)
+  const [framePreset, setFramePreset] = useState(0)
 
   const render = useCallback(() => {
     cancelAnimationFrame(raf.current)
@@ -134,9 +198,17 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       }
       ctx.setTransform(dpr * zoom, 0, 0, dpr * zoom, dpr * x * zoom, dpr * y * zoom)
       // references sit under the ink
-      for (const el of elements.current) if (el.type === 'image') drawElement(ctx, el, images.current)
-      for (const el of elements.current) if (el.type !== 'image') drawElement(ctx, el, images.current)
+      drawAll(ctx, elements.current, images.current)
       if (drawing.current) drawElement(ctx, drawing.current, images.current)
+      const picked = selected.current && elements.current.find((el) => el.id === selected.current)
+      if (picked) {
+        const b = boundsOf(picked, ctx)
+        ctx.strokeStyle = '#f0b90b'
+        ctx.lineWidth = 2 / zoom
+        ctx.setLineDash([7 / zoom, 5 / zoom])
+        ctx.strokeRect(b.x - 4 / zoom, b.y - 4 / zoom, b.w + 8 / zoom, b.h + 8 / zoom)
+        ctx.setLineDash([])
+      }
     })
   }, [])
 
@@ -164,7 +236,8 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       .sketch(projectId)
       .then((data) => {
         if (!live) return
-        elements.current = (data.scene?.elements || []).filter((el) => ['stroke', 'text', 'image'].includes(el?.type))
+        elements.current = (data.scene?.elements || []).filter((el) => TYPES.includes(el?.type))
+        lastSnapshot.current = elements.current
         setStatus('idle')
         bump((n) => n + 1)
         render()
@@ -222,14 +295,23 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
     }
   }, [projectId, toast])
 
-  const changed = useCallback(() => {
-    dirty.current = true
-    setStatus('saving')
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(save, 1200)
-    bump((n) => n + 1)
-    render()
-  }, [save, render])
+  const changed = useCallback(
+    (fromHistory = false) => {
+      if (fromHistory !== true) {
+        past.current.push(lastSnapshot.current)
+        if (past.current.length > 100) past.current.shift()
+        future.current = []
+      }
+      lastSnapshot.current = elements.current
+      dirty.current = true
+      setStatus('saving')
+      clearTimeout(saveTimer.current)
+      saveTimer.current = setTimeout(save, 1200)
+      bump((n) => n + 1)
+      render()
+    },
+    [save, render]
+  )
 
   useEffect(
     () => () => {
@@ -255,7 +337,6 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       return !(px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h)
     })
     if (elements.current.length !== before) {
-      undone.current = []
       changed()
     }
   }
@@ -279,8 +360,30 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
     } else if (tool === 'eraser') {
       eraseAt(px, py)
     } else if (tool === 'text') {
+      // The box opens on release. Opening it on press let the press itself
+      // steal focus back from it, which closed it before a key was typed.
+      e.preventDefault()
       const rect = wrapRef.current.getBoundingClientRect()
-      setTextAt({ px, py, left: e.clientX - rect.left, top: e.clientY - rect.top, value: '' })
+      pendingText.current = { px, py, left: e.clientX - rect.left, top: e.clientY - rect.top, value: '' }
+    } else if (SHAPES.includes(tool)) {
+      drawing.current = { id: uid(), type: tool, x: px, y: py, w: 0, h: 0, color, size }
+    } else if (tool === 'frame') {
+      const [name, w, h] = FRAMES[framePreset]
+      elements.current = [...elements.current, { id: uid(), type: 'frame', name, x: Math.round(px - w / 2), y: Math.round(py - h / 2), w, h }]
+      changed()
+    } else if (tool === 'select') {
+      const ctx = canvasRef.current.getContext('2d')
+      // topmost first: later layers, then later elements
+      const hit = [...elements.current]
+        .sort((a, b) => layerOf(b) - layerOf(a) || elements.current.indexOf(b) - elements.current.indexOf(a))
+        .find((el) => {
+          const b = boundsOf(el, ctx)
+          return px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h
+        })
+      selected.current = hit?.id || null
+      moving.current = hit ? { id: hit.id, sx: px, sy: py, original: hit, moved: false } : null
+      bump((n) => n + 1)
+      render()
     }
   }
 
@@ -300,6 +403,18 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       return
     }
     const [px, py] = toPaper(e)
+    if (moving.current) {
+      const m = moving.current
+      m.moved = true
+      const next = moveBy(m.original, px - m.sx, py - m.sy)
+      elements.current = elements.current.map((el) => (el.id === m.id ? next : el))
+      return render()
+    }
+    if (drawing.current && drawing.current.type !== 'stroke') {
+      drawing.current.w = px - drawing.current.x
+      drawing.current.h = py - drawing.current.y
+      return render()
+    }
     if (drawing.current) {
       const events = e.getCoalescedEvents?.() || [e]
       for (const ev of events.length ? events : [e]) {
@@ -315,12 +430,29 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
     pointers.current.delete(e.pointerId)
     if (pointers.current.size < 2 && pinch.current && !pinch.current.pan) pinch.current = null
     if (pinch.current?.pan) pinch.current = null
+    if (pendingText.current) {
+      textOpened.current = Date.now()
+      setTextAt(pendingText.current)
+      pendingText.current = null
+      return
+    }
+    if (moving.current) {
+      const m = moving.current
+      moving.current = null
+      if (m.moved) {
+          changed()
+      }
+      return
+    }
+    if (drawing.current && drawing.current.type !== 'stroke' && Math.hypot(drawing.current.w, drawing.current.h) < 6) {
+      drawing.current = null // a click, not a drag: nothing to draw
+      return render()
+    }
     if (drawing.current) {
       const el = drawing.current
       drawing.current = null
       pathCache.delete(el)
       elements.current = [...elements.current, el]
-      undone.current = []
       changed()
     }
   }
@@ -355,17 +487,17 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
   }, [render])
 
   const undo = useCallback(() => {
-    const last = elements.current[elements.current.length - 1]
-    if (!last) return
-    elements.current = elements.current.slice(0, -1)
-    undone.current.push(last)
-    changed()
+    if (!past.current.length) return
+    future.current.push(elements.current)
+    elements.current = past.current.pop()
+    selected.current = null
+    changed(true)
   }, [changed])
   const redo = useCallback(() => {
-    const el = undone.current.pop()
-    if (!el) return
-    elements.current = [...elements.current, el]
-    changed()
+    if (!future.current.length) return
+    past.current.push(elements.current)
+    elements.current = future.current.pop()
+    changed(true)
   }, [changed])
 
   useEffect(() => {
@@ -378,18 +510,36 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
         if (e.shiftKey) redo()
         else undo()
       } else if (!e.metaKey && !e.ctrlKey) {
-        const map = { p: 'pen', m: 'marker', e: 'eraser', t: 'text', h: 'hand' }
+        const map = { v: 'select', p: 'pen', m: 'marker', e: 'eraser', t: 'text', h: 'hand', r: 'rect', o: 'ellipse', a: 'arrow', f: 'frame' }
         if (map[e.key.toLowerCase()]) setTool(map[e.key.toLowerCase()])
+        if ((e.key === 'Delete' || e.key === 'Backspace') && selected.current) {
+          e.preventDefault()
+          elements.current = elements.current.filter((el) => el.id !== selected.current)
+          selected.current = null
+              changed()
+        }
       }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [canEdit, undo, redo])
 
+  // Focus the text box once it exists (after the click that opened it is over).
+  useEffect(() => {
+    if (!textAt) return
+    const t = setTimeout(() => textRef.current?.focus(), 0)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(textAt)])
+
   function commitText() {
+    // Ignore a blur in the instant after opening; that is the opening click settling.
+    if (Date.now() - textOpened.current < 250) {
+      textRef.current?.focus()
+      return
+    }
     if (textAt?.value.trim()) {
       elements.current = [...elements.current, { id: uid(), type: 'text', x: textAt.px, y: textAt.py, text: textAt.value.trim().slice(0, 600), color, size: 14 + size * 2 }]
-      undone.current = []
       changed()
     }
     setTextAt(null)
@@ -407,7 +557,6 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       const h = w * (img.naturalHeight / img.naturalWidth)
       const { x, y, zoom } = view.current
       elements.current = [...elements.current, { id: uid(), type: 'image', itemId: item.id, x: rect.width / 2 / zoom - x - w / 2, y: rect.height / 2 / zoom - y - h / 2, w, h }]
-      undone.current = []
       changed()
     }
     img.onerror = () => toast('That image’s site doesn’t let it be drawn on. Save a copy and upload it to the board to use it here.', 'error')
@@ -436,8 +585,7 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       ctx.fillStyle = '#fcfcfa'
       ctx.fillRect(0, 0, out.width, out.height)
       ctx.setTransform(scale, 0, 0, scale, (pad - minX) * scale, (pad - minY) * scale)
-      for (const el of elements.current) if (el.type === 'image') drawElement(ctx, el, images.current)
-      for (const el of elements.current) if (el.type !== 'image') drawElement(ctx, el, images.current)
+      drawAll(ctx, elements.current, images.current)
       const blob = await new Promise((resolve) => out.toBlob(resolve, 'image/png'))
       if (!blob) throw new Error('The sketch couldn’t be turned into an image.')
       const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ')
@@ -452,15 +600,20 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
   }
 
   const tools = [
+    ['select', MousePointer2, 'Select and move (V). Delete removes.'],
     ['pen', PenLine, 'Pen (P)'],
     ['marker', Highlighter, 'Marker (M)'],
     ['eraser', Eraser, 'Eraser (E)'],
     ['text', Type, 'Text (T)'],
+    ['rect', Square, 'Rectangle (R)'],
+    ['ellipse', Circle, 'Ellipse (O)'],
+    ['arrow', MoveUpRight, 'Arrow (A)'],
+    ['frame', Frame, 'Frame: an artboard to lay a screen out in (F)'],
     ['hand', Hand, 'Move the paper (H)'],
   ]
   const usable = items.filter((i) => i.thumbnail_url && (i.media_type === 'image' || i.media_type === 'link' || i.media_type === 'video'))
   const zoom = view.current.zoom
-  const cursor = tool === 'hand' || !canEdit ? 'grab' : tool === 'text' ? 'text' : 'crosshair'
+  const cursor = tool === 'hand' || !canEdit ? 'grab' : tool === 'text' ? 'text' : tool === 'select' ? 'default' : 'crosshair'
 
   return (
     <div className="h-full flex flex-col">
@@ -487,22 +640,30 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
 
         {canEdit && (
           <div className="absolute left-3 top-3 bottom-3 flex flex-col gap-2 pointer-events-none">
-            <div className="sheet p-1 flex flex-col gap-0.5 pointer-events-auto" role="toolbar" aria-label="Drawing tools">
+            <div className="sheet p-1 grid grid-cols-2 gap-0.5 pointer-events-auto" role="toolbar" aria-label="Drawing tools">
               {tools.map(([id, Icon, label]) => (
                 <button key={id} title={label} aria-label={label} aria-pressed={tool === id} onClick={() => setTool(id)} className={`w-9 h-9 rounded-md grid place-items-center ${tool === id ? 'bg-weld' : 'hover:bg-ink/7 text-mute hover:text-ink'}`}>
                   <Icon size={18} />
                 </button>
               ))}
-              <span className="h-px bg-line my-1 mx-1" />
               <button title="Draw over a reference" aria-label="Draw over a reference" onClick={() => setPicking(true)} className="w-9 h-9 rounded-md grid place-items-center hover:bg-ink/7 text-mute hover:text-ink">
                 <ImagePlus size={18} />
               </button>
             </div>
-            <div className="sheet p-1.5 flex flex-col items-center gap-1.5 pointer-events-auto" role="group" aria-label="Pen colour and size">
+            {tool === 'frame' && (
+              <div className="sheet p-1.5 pointer-events-auto text-sm" role="group" aria-label="Frame size">
+                <p className="text-xs text-mute px-1 pb-1">Click the paper to place</p>
+                {FRAMES.map(([name, w, h], i) => (
+                  <button key={name} onClick={() => setFramePreset(i)} aria-pressed={framePreset === i} className={`block w-full text-left px-2 py-1 rounded-md ${framePreset === i ? 'bg-weld' : 'hover:bg-ink/7'}`}>
+                    {name} <span className="text-xs opacity-70">{w}×{h}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="sheet p-1.5 grid grid-cols-2 justify-items-center gap-1.5 pointer-events-auto" role="group" aria-label="Pen colour and size">
               {colors.map((c) => (
                 <button key={c} title={c.toUpperCase()} aria-label={`Colour ${c}`} aria-pressed={color === c} onClick={() => setColor(c)} className={`w-6 h-6 rounded-full border border-ink/15 ${color === c ? 'ring-2 ring-offset-2 ring-offset-paper ring-ink' : ''}`} style={{ background: c }} />
               ))}
-              <span className="h-px bg-line w-full my-0.5" />
               {SIZES.map((s) => (
                 <button key={s} title={`Pen width ${s}`} aria-label={`Pen width ${s}`} aria-pressed={size === s} onClick={() => setSize(s)} className={`w-7 h-7 rounded-md grid place-items-center ${size === s ? 'bg-ink/10' : 'hover:bg-ink/7'}`}>
                   <span className="rounded-full bg-ink" style={{ width: s + 3, height: s + 3 }} />
@@ -518,16 +679,15 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
           </span>
           {canEdit && (
             <div className="sheet p-1 flex gap-0.5">
-              <button className="w-8 h-8 rounded-md grid place-items-center hover:bg-ink/7 disabled:opacity-30" onClick={undo} disabled={!elements.current.length} title="Undo (Ctrl Z)" aria-label="Undo"><Undo2 size={16} /></button>
-              <button className="w-8 h-8 rounded-md grid place-items-center hover:bg-ink/7 disabled:opacity-30" onClick={redo} disabled={!undone.current.length} title="Redo (Ctrl Shift Z)" aria-label="Redo"><Redo2 size={16} /></button>
+              <button className="w-8 h-8 rounded-md grid place-items-center hover:bg-ink/7 disabled:opacity-30" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl Z)" aria-label="Undo"><Undo2 size={16} /></button>
+              <button className="w-8 h-8 rounded-md grid place-items-center hover:bg-ink/7 disabled:opacity-30" onClick={redo} disabled={!future.current.length} title="Redo (Ctrl Shift Z)" aria-label="Redo"><Redo2 size={16} /></button>
               <button
                 className="w-8 h-8 rounded-md grid place-items-center hover:bg-madder-soft hover:text-madder disabled:opacity-30"
                 disabled={!elements.current.length}
                 title="Clear the paper"
                 aria-label="Clear the paper"
                 onClick={() => {
-                  if (!window.confirm('Clear the whole sketch? You can undo this until you leave the page.')) return
-                  undone.current = [...elements.current].reverse()
+                  if (!window.confirm('Clear the whole sketch? Undo brings it back until you leave the page.')) return
                   elements.current = []
                   changed()
                 }}
@@ -551,18 +711,23 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
 
         {textAt && (
           <textarea
-            autoFocus
+            ref={textRef}
             className="absolute bg-paper/95 border-2 border-weld rounded px-1.5 py-1 outline-none min-w-40 display"
             style={{ left: textAt.left, top: textAt.top, color, fontSize: (14 + size * 2) * zoom, lineHeight: 1.25 }}
             rows={2}
             value={textAt.value}
             maxLength={600}
-            placeholder="Type, then click away"
+            placeholder="Type, then press Enter"
             onChange={(e) => setTextAt({ ...textAt, value: e.target.value })}
             onBlur={commitText}
             onKeyDown={(e) => {
+              e.stopPropagation()
               if (e.key === 'Escape') setTextAt(null)
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commitText()
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                textOpened.current = 0
+                commitText()
+              }
             }}
           />
         )}

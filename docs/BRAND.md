@@ -48,8 +48,8 @@ The one decorative device: a dashed line, 7 on and 5 off, 2px. It marks a start 
 
 ## Shape and motion
 
-- Cards are paper pinned to a wall: 5px corners, a very soft shadow, a small lift on hover.
-- Controls have 8px corners. Thread tabs and chips are pills.
+- Cards are paper pinned to a wall: 12px corners, a very soft shadow. They land with a small bounce and lean slightly when hovered.
+- Buttons, thread tabs and chips are pills; fields have 12px corners. Tags take a dye colour from their name, and the active thread tab fills with its own dye.
 - Motion answers an action (a dialog rising, a toast). The only unprompted animation in the product is the thread drawing itself across the welcome screen, once.
 - Reduced-motion preferences are respected.
 

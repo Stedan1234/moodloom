@@ -31,3 +31,8 @@ The full product: identity, the AI layer, sharing, and everything around the boa
 ## 1.x — September to October 2026
 
 MVP: projects, fixed-grid then masonry board, browser extension with pairing codes, notes, categories, uploads and paste, account saving, password reset, lightbox navigation, collapsible board, rich-text notes.
+
+## 3.0.1 — 14 November 2026
+
+- Sketch: fixed the text tool (the box closed before you could type). Added select and move, rectangle, ellipse, arrow and frames (Phone, Desktop, Square post, Story, A4). Undo now restores deletions and moves.
+- Warmer interface: rounder cards and pill buttons, cards land with a bounce and lean on hover, tags and the active thread take dye colours, a greeting on the projects page, friendlier empty board.

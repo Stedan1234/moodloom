@@ -38,9 +38,10 @@ function Threads({ categories, items, active, onSelect, canEdit, onCreate, onRen
         <button
           onClick={() => onSelect(key)}
           onDoubleClick={extra?.onRename}
-          className={`flex items-center gap-1.5 pl-2.5 pr-3 py-1.5 rounded-full text-sm whitespace-nowrap border-[1.5px] ${
-            on ? 'bg-paper border-ink font-semibold' : 'border-transparent text-mute hover:text-ink hover:bg-paper/60'
+          className={`flex items-center gap-1.5 pl-2.5 pr-3 py-1.5 rounded-full text-sm whitespace-nowrap border-[1.5px] transition-transform active:scale-95 ${
+            on ? 'font-semibold' : 'border-transparent text-mute hover:text-ink hover:bg-paper/60'
           }`}
+          style={on ? { background: `${color}2e`, borderColor: color } : undefined}
           aria-pressed={on}
           title={extra ? 'Double-click to rename' : undefined}
         >
@@ -413,10 +414,16 @@ export default function Board({ project, projectId, items, categories, canEdit, 
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto scroll-thin px-3 sm:px-5 pt-2 pb-10">
+            <div className="flex-1 overflow-y-auto scroll-thin px-3 sm:px-5 pt-2 pb-10 wall-dots">
               {items.length === 0 && (
                 <div className="max-w-md mt-10 mx-auto text-center">
-                  <h2 className="text-2xl mb-2">A bare wall</h2>
+                  {canEdit && (
+                    <svg width="120" height="92" viewBox="0 0 120 92" fill="none" className="mx-auto mb-1" aria-hidden="true">
+                      <path d="M96 86C104 52 78 30 44 34c-10 1-18 6-10 12 9 6 22-6 12-20C40 18 30 12 16 10" stroke="#17332d" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="7 6" />
+                      <path d="M27 4 15 10l9 10" stroke="#17332d" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                  <h2 className="text-2xl mb-2">A bare wall. <span className="swipe">Pin something up.</span></h2>
                   <p className="text-mute">
                     {canEdit
                       ? 'Paste a link above, drop in files, or paste a screenshot with Ctrl/Cmd + V. With the browser extension, one click on any page sends it here.'
