@@ -165,6 +165,11 @@ export const api = {
   deleteItem: (pid, id) => del(`/projects/${pid}/items/${id}`),
   reorder: (pid, ids) => post(`/projects/${pid}/items/reorder`, { ids }),
   similar: (pid, id) => get(`/projects/${pid}/items/${id}/similar`),
+  importLinks: (pid, links, { categoryId, tag } = {}) => post(`/projects/${pid}/items/import`, { links, categoryId, tag: tag || undefined }),
+  commentCounts: (pid) => get(`/projects/${pid}/items/comment-counts`),
+  comments: (pid, id) => get(`/projects/${pid}/items/${id}/comments`),
+  addComment: (pid, id, body) => post(`/projects/${pid}/items/${id}/comments`, { body }),
+  deleteComment: (pid, id, commentId) => del(`/projects/${pid}/items/${id}/comments/${commentId}`),
 
   categories: (pid) => get(`/projects/${pid}/categories`),
   createCategory: (pid, name, itemIds) => post(`/projects/${pid}/categories`, { name, itemIds }),

@@ -36,3 +36,10 @@ MVP: projects, fixed-grid then masonry board, browser extension with pairing cod
 
 - Sketch: fixed the text tool (the box closed before you could type). Added select and move, rectangle, ellipse, arrow and frames (Phone, Desktop, Square post, Story, A4). Undo now restores deletions and moves.
 - Warmer interface: rounder cards and pill buttons, cards land with a bounce and lean on hover, tags and the active thread take dye colours, a greeting on the projects page, friendlier empty board.
+
+## 3.0.2 — 14 November 2026
+
+- **Import links:** paste a list, or choose folders from a browser's bookmarks export, and bring up to 300 links at a time onto a thread. Previews fill in afterwards.
+- **First-run walkthrough:** four steps that point at the real controls the first time a board is opened; "Show me around" in the project menu brings it back.
+- **Comments on references**, with a count on each card. Anyone on a shared project can comment, including viewers.
+- **`npm run ai:eval-real`:** measures "more like this" on your own folder of labelled references and writes `docs/ai/RESULTS-REAL.md`.

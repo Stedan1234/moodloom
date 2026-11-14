@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronLeft, Compass, Download, FileText, LayoutGrid, MoreHorizontal, Palette, PenLine, Share2, Trash2, Pencil } from 'lucide-react'
+import { ChevronLeft, Compass, Download, FileText, LayoutGrid, Map as MapIcon, MoreHorizontal, Palette, PenLine, Share2, Trash2, Pencil } from 'lucide-react'
 import { api } from '../api'
 import { linkProps, navigate } from '../router'
 import { ErrorNote, Mark, Menu, MenuItem, Modal, Spinner, useToast } from '../ui'
@@ -157,6 +157,15 @@ export default function Project({ projectId, tab, openItemId }) {
             </button>
           )}
         >
+          <MenuItem
+            icon={MapIcon}
+            onClick={() => {
+              if (tab !== 'board') navigate(`/p/${projectId}`)
+              setTimeout(() => window.dispatchEvent(new Event('moodloom:tour')), tab === 'board' ? 0 : 400)
+            }}
+          >
+            Show me around
+          </MenuItem>
           <MenuItem icon={Download} onClick={exportZip}>
             Download project as ZIP
           </MenuItem>
@@ -174,7 +183,7 @@ export default function Project({ projectId, tab, openItemId }) {
       </header>
 
       <div className="flex-1 min-h-0 flex flex-col-reverse md:flex-row">
-        <nav className="shrink-0 bg-paper border-t md:border-t-0 md:border-r border-line flex md:flex-col md:w-[76px] md:py-3 md:gap-1 justify-around md:justify-start no-print" aria-label="Project sections">
+        <nav className="shrink-0 bg-paper border-t md:border-t-0 md:border-r border-line flex md:flex-col md:w-[76px] md:py-3 md:gap-1 justify-around md:justify-start no-print" aria-label="Project sections" data-tour="sections">
           {TABS.map((t) => {
             const active = tab === t.id
             return (

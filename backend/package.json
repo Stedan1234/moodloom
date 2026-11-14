@@ -1,6 +1,6 @@
 {
   "name": "moodloom-backend",
-  "version": "2.0.0",
+  "version": "3.0.2",
   "description": "Moodloom API: projects, references, analysis, AI direction, sharing",
   "type": "module",
   "main": "src/server.js",
@@ -12,7 +12,8 @@
     "test": "node --test --test-concurrency=1 --test-reporter=spec \"test/*.test.js\"",
     "set-plan": "node src/scripts/setPlan.js",
     "ai:eval": "node src/scripts/evalAll.js",
-    "demo:seed": "node src/scripts/seedDemo.js"
+    "demo:seed": "node src/scripts/seedDemo.js",
+    "ai:eval-real": "node src/scripts/evalReal.js"
   },
   "dependencies": {
     "archiver": "^8.0.0",

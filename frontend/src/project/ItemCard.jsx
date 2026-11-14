@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Download, ExternalLink, FileText, MessageSquareText, Play, Quote, Trash2 } from 'lucide-react'
+import { Download, ExternalLink, FileText, MessageCircle, MessageSquareText, Play, Quote, Trash2 } from 'lucide-react'
 import { embedUrl, formatBytes, hostOf, itemLabel, safeHref, tagTint } from '../lib/util'
 
 // Loads an uploaded font file under a private family name so it can be shown
@@ -126,7 +126,7 @@ function caption(item) {
   return item.title || (item.is_upload ? item.file_name : hostOf(item.source_url))
 }
 
-export default function ItemCard({ item, thread, canEdit, onOpen, onDelete, dragProps, dimmed }) {
+export default function ItemCard({ item, thread, canEdit, onOpen, onDelete, dragProps, dimmed, comments = 0 }) {
   const fontFamily = useFontFace(item)
   const text = caption(item)
   const hasNote = item.media_type !== 'quote' && item.note
@@ -167,6 +167,11 @@ export default function ItemCard({ item, thread, canEdit, onOpen, onDelete, drag
           </span>
         )}
       </button>
+      {comments > 0 && (
+        <span className="absolute top-2 left-2 flex items-center gap-1 bg-weld text-ink text-[11px] font-semibold rounded-full pl-1.5 pr-2 py-0.5 shadow" title={`${comments} comment${comments === 1 ? '' : 's'}`}>
+          <MessageCircle size={12} /> {comments}
+        </span>
+      )}
       <div className="pin-tools absolute top-1.5 right-1.5 flex gap-1">
         {item.media_type === 'file' && safeHref(item.source_url) && (
           <a href={safeHref(item.source_url)} download={item.file_name || true} className="w-7 h-7 rounded-full bg-ink/75 text-white grid place-items-center" title="Download" aria-label="Download file">

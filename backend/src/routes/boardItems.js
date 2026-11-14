@@ -18,6 +18,7 @@ import { classifyUpload, cleanFileName, maxUploadBytes } from '../services/files
 import { imageSize } from '../services/analysis.js';
 import { ITEM_COLUMNS, serializeItem } from '../services/serialize.js';
 import { queueItem } from '../services/items.js';
+import { enqueue } from '../lib/jobs.js';
 import { assertCanStore } from '../services/plans.js';
 import { loadProjectVectors } from '../services/ai/store.js';
 import { nearest } from '../services/ai/similarity.js';
@@ -178,6 +179,165 @@ boardItemsRouter.post('/', projectAccess('editor'), async (req, res) => {
   await touchProject(req.project.id);
   queueItem(inserted.rows[0].id);
   res.status(201).json(serializeItem(inserted.rows[0]));
+});
+
+/**
+ * POST /projects/:projectId/items/import — bring in many links at once
+ * (a browser bookmarks export, a pasted list). Body:
+ *   { links: [{ url, title? }], categoryId?, tag? }   up to 300 links
+ * Rows are created straight away with no preview; each link's title and
+ * preview image are then fetched in the background, one at a time, through
+ * the same guarded fetch as a single capture. Links already on the board,
+ * repeats within the list, and anything that isn't http(s) are skipped and
+ * counted, never an error: one bad line shouldn't sink an import.
+ */
+boardItemsRouter.post('/import', projectAccess('editor'), uploadLimiter, async (req, res) => {
+  const body = parse(
+    z.object({
+      links: z
+        .array(z.object({ url: z.string().trim().max(4000), title: text(300).optional().nullable() }))
+        .min(1, 'There are no links to import')
+        .max(300, 'Import up to 300 links at a time'),
+      categoryId: z.union([z.number(), z.string(), z.null()]).optional(),
+      tag: z.string().trim().toLowerCase().max(40).optional(),
+    }),
+    req.body
+  );
+  const categoryId = await resolveCategoryId(req.project.id, body.categoryId);
+
+  const seen = new Set();
+  const wanted = [];
+  let invalid = 0;
+  let repeated = 0;
+  for (const link of body.links) {
+    let url;
+    try {
+      url = new URL(link.url);
+    } catch {
+      invalid++;
+      continue;
+    }
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      invalid++;
+      continue;
+    }
+    const normalized = url.toString();
+    if (seen.has(normalized)) {
+      repeated++;
+      continue;
+    }
+    seen.add(normalized);
+    wanted.push({ url: normalized, title: link.title || null });
+  }
+
+  const existing = await pool.query('SELECT source_url FROM board_items WHERE project_id = $1 AND source_url = ANY($2::text[])', [
+    req.project.id,
+    wanted.map((w) => w.url),
+  ]);
+  const have = new Set(existing.rows.map((r) => r.source_url));
+  const fresh = wanted.filter((w) => !have.has(w.url));
+
+  const count = await pool.query('SELECT COALESCE(MAX(position), -1) + 1 AS next, COUNT(*)::int AS n FROM board_items WHERE project_id = $1', [req.project.id]);
+  const room = Math.max(0, config.limits.itemsPerProject - count.rows[0].n);
+  const toAdd = fresh.slice(0, room);
+  let position = count.rows[0].next;
+
+  const added = [];
+  for (const link of toAdd) {
+    const detected = detectMedia(link.url);
+    const inserted = await pool.query(
+      `INSERT INTO board_items (project_id, source_url, media_type, title, tags, thumbnail_url, meta, position, category_id, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (project_id, source_url) DO NOTHING
+       RETURNING id`,
+      [req.project.id, link.url, detected.mediaType, link.title, body.tag ? [body.tag] : [], detected.thumbnailUrl, JSON.stringify(detected.meta || {}), position, categoryId, req.userId]
+    );
+    if (inserted.rows.length === 0) continue;
+    position++;
+    const id = inserted.rows[0].id;
+    added.push(id);
+    if (detected.wantsPreview) {
+      enqueue(`preview for imported item ${id}`, async () => {
+        const preview = await fetchPagePreview(link.url);
+        if (preview.ogImage || preview.ogTitle) {
+          await pool.query('UPDATE board_items SET thumbnail_url = COALESCE(thumbnail_url, $2), title = COALESCE(title, $3) WHERE id = $1', [id, preview.ogImage || null, preview.ogTitle || null]);
+        }
+        queueItem(id);
+      });
+    } else {
+      queueItem(id);
+    }
+  }
+
+  if (added.length) await touchProject(req.project.id);
+  res.status(201).json({
+    added: added.length,
+    alreadyOnBoard: have.size,
+    repeated,
+    invalid,
+    overLimit: fresh.length - toAdd.length,
+  });
+});
+
+// ── comments on a reference ─────────────────────────────────────────────
+
+// GET /projects/:projectId/items/comment-counts — { [itemId]: n } for the
+// board's badges, in one query. Declared before the /:itemId routes.
+boardItemsRouter.get('/comment-counts', projectAccess('viewer'), async (req, res) => {
+  const result = await pool.query(
+    `SELECT c.item_id, COUNT(*)::int AS n FROM item_comments c
+     JOIN board_items i ON i.id = c.item_id WHERE i.project_id = $1 GROUP BY c.item_id`,
+    [req.project.id]
+  );
+  res.json(Object.fromEntries(result.rows.map((r) => [r.item_id, r.n])));
+});
+
+async function itemInProject(req) {
+  const id = idParam(req.params.itemId);
+  if (!id) throw new HttpError(404, 'Item not found');
+  const found = await pool.query('SELECT id FROM board_items WHERE id = $1 AND project_id = $2', [id, req.project.id]);
+  if (found.rows.length === 0) throw new HttpError(404, 'Item not found');
+  return id;
+}
+
+const commentRow = (row, userId) => ({
+  id: row.id,
+  body: row.body,
+  author: row.display_name || row.email || 'Someone',
+  mine: row.user_id === userId,
+  created_at: row.created_at,
+});
+const COMMENT_SELECT = `SELECT c.id, c.body, c.user_id, c.created_at, u.display_name, u.email
+  FROM item_comments c LEFT JOIN users u ON u.id = c.user_id`;
+
+boardItemsRouter.get('/:itemId/comments', projectAccess('viewer'), async (req, res) => {
+  const itemId = await itemInProject(req);
+  const result = await pool.query(`${COMMENT_SELECT} WHERE c.item_id = $1 ORDER BY c.created_at ASC, c.id ASC`, [itemId]);
+  res.json(result.rows.map((r) => commentRow(r, req.userId)));
+});
+
+// Viewers may comment: saying which reference they mean is why they were invited.
+boardItemsRouter.post('/:itemId/comments', projectAccess('viewer'), uploadLimiter, async (req, res) => {
+  const itemId = await itemInProject(req);
+  const { body } = parse(z.object({ body: z.string({ error: 'Write something first' }).trim().min(1, 'Write something first').max(2000, 'Keep a comment under 2,000 characters') }), req.body);
+  const count = await pool.query('SELECT COUNT(*)::int AS n FROM item_comments WHERE item_id = $1', [itemId]);
+  if (count.rows[0].n >= 200) throw new HttpError(400, 'This reference has reached 200 comments.', 'TOO_MANY_COMMENTS');
+  const inserted = await pool.query('INSERT INTO item_comments (item_id, user_id, body) VALUES ($1, $2, $3) RETURNING id', [itemId, req.userId, body]);
+  const row = await pool.query(`${COMMENT_SELECT} WHERE c.id = $1`, [inserted.rows[0].id]);
+  res.status(201).json(commentRow(row.rows[0], req.userId));
+});
+
+// Your own comment, or any comment if you own the project.
+boardItemsRouter.delete('/:itemId/comments/:commentId', projectAccess('viewer'), async (req, res) => {
+  const itemId = await itemInProject(req);
+  const commentId = idParam(req.params.commentId);
+  if (!commentId) throw new HttpError(404, 'Comment not found');
+  const result = await pool.query(
+    `DELETE FROM item_comments WHERE id = $1 AND item_id = $2 AND ($3 OR user_id = $4) RETURNING id`,
+    [commentId, itemId, req.projectRole === 'owner', req.userId]
+  );
+  if (result.rows.length === 0) throw new HttpError(404, 'Comment not found');
+  res.status(204).send();
 });
 
 /**

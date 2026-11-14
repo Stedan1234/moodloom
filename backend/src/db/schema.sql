@@ -232,3 +232,16 @@ CREATE TABLE IF NOT EXISTS direction_notes (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_direction_notes_project ON direction_notes(project_id, created_at DESC);
+
+-- ───────────────────────── comments ─────────────────────────
+-- Short remarks on a single reference, for projects shared with other
+-- people. Anyone on the project can comment, including viewers: a client
+-- saying "this one" is the point of sharing a board.
+CREATE TABLE IF NOT EXISTS item_comments (
+  id SERIAL PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES board_items(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  body TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_item_comments_item ON item_comments(item_id);

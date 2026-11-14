@@ -116,4 +116,5 @@ cd backend
 npm install
 npm run ai:eval      # writes docs/ai/RESULTS.md and results.json
 npm test             # includes tests for the AI routes with a mock provider
+npm run ai:eval-real -- path/to/labelled-folder   # the same similarity measures on your own labelled references
 ```

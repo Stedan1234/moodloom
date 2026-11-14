@@ -1,13 +1,16 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronsLeft, ChevronsRight, Maximize2, Minimize2, NotebookPen, Plus, Quote, Search, Upload, X } from 'lucide-react'
+import { ChevronsLeft, ChevronsRight, Import, Maximize2, Minimize2, NotebookPen, Plus, Quote, Search, Upload, X } from 'lucide-react'
 import { api } from '../api'
 import { navigate } from '../router'
 import { ErrorNote, Modal, Spinner, useToast } from '../ui'
 import { threadFor } from '../lib/util'
 import ItemCard from './ItemCard'
 import Notes from './Notes'
+import { tourSeen } from './Tour'
 
 const ItemViewer = lazy(() => import('./ItemViewer'))
+const ImportDialog = lazy(() => import('./ImportDialog'))
+const Tour = lazy(() => import('./Tour'))
 
 const LAYOUT_KEY = 'moodloom_layout'
 function readLayout() {
@@ -140,7 +143,7 @@ function PassageDialog({ onClose, onSave }) {
   )
 }
 
-export default function Board({ project, projectId, items, categories, canEdit, loadItems, loadCategories, setItems, setCategories, pendingDeletes, openItemId }) {
+export default function Board({ project, projectId, items, categories, canEdit, isOwner, loadItems, loadCategories, setItems, setCategories, pendingDeletes, openItemId }) {
   const toast = useToast()
   const [active, setActive] = useState('all')
   const [url, setUrl] = useState('')
@@ -151,6 +154,9 @@ export default function Board({ project, projectId, items, categories, canEdit, 
   const [layout, setLayoutState] = useState(readLayout)
   const [dropping, setDropping] = useState(false)
   const [passage, setPassage] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [touring, setTouring] = useState(false)
+  const [commentCounts, setCommentCounts] = useState({})
   const [dragId, setDragId] = useState(null)
   const fileRef = useRef(null)
   const activeRef = useRef(active)
@@ -164,6 +170,25 @@ export default function Board({ project, projectId, items, categories, canEdit, 
       /* a convenience only */
     }
   }
+  // Comment badges for the whole board in one request, refreshed with the board.
+  useEffect(() => {
+    let live = true
+    api.commentCounts(projectId).then((c) => live && setCommentCounts(c)).catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [projectId, items.length])
+
+  // The first board someone opens gets a short walk round; "Show me around"
+  // in the project menu brings it back.
+  useEffect(() => {
+    if (canEdit && !openItemId && !tourSeen() && window.innerWidth >= 768) setTouring(true)
+    const again = () => setTouring(true)
+    window.addEventListener('moodloom:tour', again)
+    return () => window.removeEventListener('moodloom:tour', again)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const targetCategory = () => (typeof activeRef.current === 'number' ? activeRef.current : null)
 
   // A category deleted elsewhere shouldn't leave this tab pointing at nothing.
@@ -342,7 +367,7 @@ export default function Board({ project, projectId, items, categories, canEdit, 
           <>
             <div className="px-3 sm:px-5 pt-3 no-print">
               {canEdit && (
-                <form onSubmit={addUrl} className="flex gap-2">
+                <form onSubmit={addUrl} className="flex gap-2" data-tour="add">
                   <input
                     className="field flex-1 min-w-0"
                     placeholder="Paste a link, or drop files anywhere on the board"
@@ -368,6 +393,10 @@ export default function Board({ project, projectId, items, categories, canEdit, 
                     <Upload size={16} />
                     <span className="hidden lg:inline">{uploading ? `Adding ${uploading.done + 1} of ${uploading.total}` : 'Upload'}</span>
                   </button>
+                  <button type="button" className="btn btn-plain" onClick={() => setImporting(true)} title="Import a list of links or a bookmarks file">
+                    <Import size={16} />
+                    <span className="hidden 2xl:inline">Import</span>
+                  </button>
                   <button type="button" className="btn btn-plain" onClick={() => setPassage(true)} title="Add a passage of text">
                     <Quote size={16} />
                     <span className="hidden xl:inline">Passage</span>
@@ -376,7 +405,7 @@ export default function Board({ project, projectId, items, categories, canEdit, 
               )}
               <div className="mt-2 empty:hidden"><ErrorNote>{error}</ErrorNote></div>
               <div className="flex items-center gap-2">
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0" data-tour="threads">
                   <Threads
                     categories={categories}
                     items={items}
@@ -444,6 +473,7 @@ export default function Board({ project, projectId, items, categories, canEdit, 
                     onOpen={openItem}
                     onDelete={removeItem}
                     dimmed={dragId === item.id}
+                    comments={commentCounts[item.id] || 0}
                     dragProps={
                       canEdit && !term
                         ? {
@@ -475,6 +505,7 @@ export default function Board({ project, projectId, items, categories, canEdit, 
       <aside
         className={`${notesHidden ? 'hidden' : layout === 'notes' ? 'flex flex-1' : 'hidden md:flex md:w-[380px] xl:w-[440px] md:flex-none'} min-w-0 flex-col border-l border-line bg-paper`}
         aria-label="Project notes"
+        data-tour="notes"
       >
         <Notes projectId={projectId} canEdit={canEdit} wide={layout === 'notes'} onClose={layout === 'notes' ? () => setLayout('split') : null} />
       </aside>
@@ -508,6 +539,11 @@ export default function Board({ project, projectId, items, categories, canEdit, 
         />
       )}
 
+      <Suspense fallback={null}>
+        {importing && <ImportDialog projectId={projectId} categories={categories} defaultCategory={typeof active === 'number' ? active : ''} onClose={() => setImporting(false)} onDone={() => loadItems()} />}
+        {touring && <Tour onClose={() => setTouring(false)} />}
+      </Suspense>
+
       <Suspense fallback={<div className="fixed inset-0 z-50 bg-ink/80 grid place-items-center"><Spinner /></div>}>
         {viewerIndex >= 0 && (
           <ItemViewer
@@ -519,6 +555,8 @@ export default function Board({ project, projectId, items, categories, canEdit, 
             allItems={items}
             categories={categories}
             canEdit={canEdit}
+            isOwner={isOwner}
+            onCommentCount={(id, d) => setCommentCounts((prev) => ({ ...prev, [id]: Math.max(0, (prev[id] || 0) + d) }))}
             onGo={openItem}
             onClose={closeItem}
             onChanged={(updated) => setItems((prev) => (prev || []).map((i) => (i.id === updated.id ? updated : i)))}

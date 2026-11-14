@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Sparkles, Trash2, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, SendHorizontal, Sparkles, Trash2, X } from 'lucide-react'
 import { api } from '../api'
 import { Spinner, Swatch, useToast } from '../ui'
 import { embedUrl, formatBytes, hostOf, itemLabel, KIND_LABEL, safeHref, tagTint, threadFor, timeAgo } from '../lib/util'
@@ -161,7 +161,78 @@ function TagEditor({ tags, canEdit, onChange }) {
   )
 }
 
-export default function ItemViewer({ projectId, list, index, allItems, categories, canEdit, readOnlyShare = false, onGo, onClose, onChanged, onDelete, onAdded }) {
+// Remarks on one reference, for boards shared with other people. Anyone on
+// the project can add one; you can remove your own, the owner any.
+function Comments({ projectId, itemId, isOwner, onCount }) {
+  const toast = useToast()
+  const [list, setList] = useState(null)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    let live = true
+    api.comments(projectId, itemId).then((c) => live && setList(c)).catch(() => live && setList([]))
+    return () => {
+      live = false
+    }
+  }, [projectId, itemId])
+  async function send(e) {
+    e.preventDefault()
+    if (!draft.trim() || busy) return
+    setBusy(true)
+    try {
+      const created = await api.addComment(projectId, itemId, draft.trim())
+      setList((prev) => [...(prev || []), created])
+      onCount(1)
+      setDraft('')
+    } catch (err) {
+      toast(err.message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+  async function remove(id) {
+    try {
+      await api.deleteComment(projectId, itemId, id)
+      setList((prev) => prev.filter((c) => c.id !== id))
+      onCount(-1)
+    } catch (err) {
+      toast(err.message, 'error')
+    }
+  }
+  return (
+    <div>
+      <span className="label">Comments{list?.length ? ` (${list.length})` : ''}</span>
+      {list?.length > 0 && (
+        <ul className="space-y-2.5 mb-3">
+          {list.map((c) => (
+            <li key={c.id} className="text-sm group/c">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-semibold truncate">{c.mine ? 'You' : c.author}</span>
+                <span className="text-xs text-mute shrink-0">
+                  {timeAgo(c.created_at)}
+                  {(c.mine || isOwner) && (
+                    <button className="ml-2 underline opacity-0 group-hover/c:opacity-100 focus:opacity-100" onClick={() => remove(c.id)}>
+                      remove
+                    </button>
+                  )}
+                </span>
+              </div>
+              <p className="whitespace-pre-wrap break-words">{c.body}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form onSubmit={send} className="flex gap-1.5">
+        <input className="field !py-1.5 text-sm" value={draft} maxLength={2000} placeholder={list?.length ? 'Reply' : 'Say something about this one'} onChange={(e) => setDraft(e.target.value)} aria-label="Write a comment" />
+        <button className="btn btn-plain btn-icon shrink-0" disabled={busy || !draft.trim()} aria-label="Post comment" title="Post comment">
+          <SendHorizontal size={15} />
+        </button>
+      </form>
+    </div>
+  )
+}
+
+export default function ItemViewer({ projectId, list, index, allItems, categories, canEdit, isOwner = false, readOnlyShare = false, onCommentCount = () => {}, onGo, onClose, onChanged, onDelete, onAdded }) {
   const toast = useToast()
   const item = list[index]
   const [title, setTitle] = useState(item.title || '')
@@ -356,6 +427,8 @@ export default function ItemViewer({ projectId, list, index, allItems, categorie
               <p className="hint mt-1.5">Matched by colour, layout and texture, worked out on Moodloom’s own server.</p>
             </div>
           )}
+
+          {!readOnlyShare && <Comments projectId={projectId} itemId={item.id} isOwner={isOwner} onCount={(d) => onCommentCount(item.id, d)} />}
 
           <div className="text-sm text-mute space-y-1 pt-1">
             {item.file_name && <p className="break-all">{item.file_name}{item.file_size ? `, ${formatBytes(item.file_size)}` : ''}</p>}

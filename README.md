@@ -44,7 +44,7 @@ cd backend && npm run demo:seed     # then log in as demo@moodloom.test / moodlo
 ## Checks
 
 ```bash
-cd backend && npm test        # 58 API tests against a real Postgres test database
+cd backend && npm test        # 61 API tests against a real Postgres test database
 cd frontend && npm run lint && npm run build
 cd backend && npm run ai:eval # re-measures palette and similarity methods (docs/ai/RESULTS.md)
 ```

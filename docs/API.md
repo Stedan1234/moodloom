@@ -43,11 +43,16 @@ Roles on a project: **owner**, **editor**, **viewer**. "Editor+" below means edi
 | `GET /` | viewer+ | Every reference. |
 | `POST /` | editor+ | `{ sourceUrl, title?, note?, tags?, categoryId?, pageUrl? }` Saving the same URL twice returns the first with `alreadyOnBoard: true`. |
 | `POST /upload` | editor+ | Multipart `file`, plus optional `title`, `note`, `categoryId`. |
+| `POST /import` | editor+ | `{ links: [{ url, title? }], categoryId?, tag? }` Up to 300 links. → `{ added, alreadyOnBoard, repeated, invalid, overLimit }`. Previews are fetched in the background. |
 | `POST /quote` | editor+ | `{ text, title?, tags?, categoryId?, fromItemId?, page? }` A passage of text. |
 | `POST /reorder` | editor+ | `{ ids: [...] }` in ascending position. |
 | `PATCH /:itemId` | editor+ | `{ title?, note?, tags?, categoryId?, position? }` |
 | `DELETE /:itemId` | editor+ | Also deletes its file. |
 | `GET /:itemId/similar` | viewer+ | → `{ available, items }` nearest references by appearance. |
+| `GET /comment-counts` | viewer+ | → `{ itemId: count }` for the whole board. |
+| `GET /:itemId/comments` | viewer+ | Comments on one reference, oldest first. |
+| `POST /:itemId/comments` | viewer+ | `{ body }` Viewers may comment. |
+| `DELETE /:itemId/comments/:commentId` | viewer+ | Your own comment, or any if you own the project. |
 
 A reference: `{ id, media_type, title, note, tags, source_url, thumbnail_url, width, height, palette: [{ hex, pct, name }], meta, is_upload, file_name, file_size, mime_type, position, category_id, analyzed, created_at }`. `media_type` is `image`, `video`, `link`, `pdf`, `font`, `file` or `quote`.
 
