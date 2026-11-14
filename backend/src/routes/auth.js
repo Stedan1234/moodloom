@@ -2,120 +2,84 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { pool } from '../db/pool.js';
+import { config } from '../config.js';
 import { signToken, requireAuth } from '../middleware/auth.js';
 import { authLimiter, pairLimiter, resetLimiter } from '../middleware/rateLimit.js';
 import { sendMail } from '../services/mailer.js';
+import { HttpError } from '../lib/errors.js';
+import { parse, z, emailSchema, newPasswordSchema } from '../lib/validate.js';
 
 export const authRouter = Router();
 
-/**
- * POST /auth/anonymous
- * Creates a brand-new anonymous user with no email/password, and returns a token.
- * This is the default entry point: opening the extension or app for the first time
- * with no account should "just work" with zero friction.
- */
-authRouter.post('/anonymous', authLimiter, async (req, res) => {
-  const result = await pool.query(
-    'INSERT INTO users DEFAULT VALUES RETURNING id, anon_token'
-  );
-  const user = result.rows[0];
-  const token = signToken(user.id);
-  res.status(201).json({ token, anonToken: user.anon_token });
-});
+// Compared against when a login names an email that has no account, so the
+// request takes the same time either way and response timing can't be used
+// to discover which emails are registered. (A bcrypt hash of a random
+// string nobody knows.)
+const DUMMY_HASH = bcrypt.hashSync(crypto.randomBytes(24).toString('hex'), 10);
 
-/**
- * POST /auth/claim
- * Attaches an email + password to the CURRENT anonymous account, so it can be
- * recovered later from a different browser/device. Requires an existing valid token.
- */
-authRouter.post('/claim', requireAuth, authLimiter, async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'email and password are required' });
-  }
-  if (password.length < 8) {
-    return res.status(400).json({ error: 'password must be at least 8 characters' });
-  }
-
-  const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
-  if (existing.rows.length > 0) {
-    return res.status(409).json({ error: 'An account with this email already exists' });
-  }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  await pool.query('UPDATE users SET email = $1, password_hash = $2 WHERE id = $3', [
-    email,
-    passwordHash,
-    req.userId,
-  ]);
-  res.json({ ok: true, email });
-});
-
-/**
- * GET /auth/me
- * Tells the caller whether the CURRENT account has been claimed (has an
- * email on file) or is still a bare anonymous account. Used by the web app
- * to decide whether to show the "back up your account" prompt — an
- * anonymous account has no recovery path at all if its token is ever lost
- * (browser storage cleared, JWT_SECRET rotated, etc.), so this is a real
- * data-loss risk, not just a nice-to-have reminder.
- */
-authRouter.get('/me', requireAuth, async (req, res) => {
-  const result = await pool.query('SELECT email FROM users WHERE id = $1', [req.userId]);
-  res.json({ email: result.rows[0]?.email || null });
-});
-
-/**
- * POST /auth/login
- * Recovers an existing account (one that has already been claimed with email/password)
- * from a new browser/device.
- */
-authRouter.post('/login', authLimiter, async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'email and password are required' });
-  }
-
-  const result = await pool.query(
-    'SELECT id, password_hash FROM users WHERE email = $1',
-    [email]
-  );
-  const user = result.rows[0];
-  if (!user || !user.password_hash) {
-    return res.status(401).json({ error: 'Invalid email or password' });
-  }
-
-  const valid = await bcrypt.compare(password, user.password_hash);
-  if (!valid) {
-    return res.status(401).json({ error: 'Invalid email or password' });
-  }
-
-  const token = signToken(user.id);
-  res.json({ token });
-});
-
-const RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-function hashToken(token) {
+export function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 /**
+ * POST /auth/anonymous
+ * Creates a brand-new anonymous account and returns its token. This is the
+ * zero-friction entry point: opening the app for the first time works
+ * without signing up.
+ */
+authRouter.post('/anonymous', authLimiter, async (req, res) => {
+  const result = await pool.query('INSERT INTO users DEFAULT VALUES RETURNING id, token_version');
+  res.status(201).json({ token: signToken(result.rows[0]) });
+});
+
+/**
+ * POST /auth/claim
+ * Attaches an email + password to the CURRENT anonymous account so it can be
+ * recovered from another browser or device.
+ */
+authRouter.post('/claim', requireAuth, authLimiter, async (req, res) => {
+  const { email, password } = parse(z.object({ email: emailSchema, password: newPasswordSchema }), req.body);
+  if (req.user.email) throw new HttpError(409, 'This account already has an email on file.', 'ALREADY_CLAIMED');
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  try {
+    await pool.query('UPDATE users SET email = $1, password_hash = $2 WHERE id = $3', [email, passwordHash, req.userId]);
+  } catch (err) {
+    if (err.code === '23505') throw new HttpError(409, 'An account with this email already exists', 'EMAIL_TAKEN');
+    throw err;
+  }
+  res.json({ ok: true, email });
+});
+
+/**
+ * POST /auth/login
+ * Signs in to an account that has been claimed with email + password.
+ */
+authRouter.post('/login', authLimiter, async (req, res) => {
+  const { email, password } = parse(
+    z.object({ email: emailSchema, password: z.string({ error: 'password is required' }).min(1, 'password is required').max(1000) }),
+    req.body
+  );
+  const result = await pool.query('SELECT id, password_hash, token_version FROM users WHERE email = $1', [email]);
+  const user = result.rows[0];
+  const valid = await bcrypt.compare(password, user?.password_hash || DUMMY_HASH);
+  if (!user || !user.password_hash || !valid) {
+    throw new HttpError(401, 'Invalid email or password', 'BAD_CREDENTIALS');
+  }
+  res.json({ token: signToken(user) });
+});
+
+const RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/**
  * POST /auth/forgot-password
- * Emails a single-use reset link. ALWAYS responds with the same generic
- * success whether or not the email has an account, so this can't be used to
- * discover which emails are registered.
+ * Emails a single-use reset link. Always answers the same way whether or not
+ * the email has an account.
  */
 authRouter.post('/forgot-password', resetLimiter, async (req, res) => {
-  const email = typeof req.body.email === 'string' ? req.body.email.trim() : '';
-  if (!email) {
-    return res.status(400).json({ error: 'email is required' });
-  }
+  const { email } = parse(z.object({ email: emailSchema }), req.body);
 
-  const result = await pool.query(
-    'SELECT id FROM users WHERE email = $1 AND password_hash IS NOT NULL',
-    [email]
-  );
+  const result = await pool.query('SELECT id FROM users WHERE email = $1 AND password_hash IS NOT NULL', [email]);
   const user = result.rows[0];
   if (user) {
     const token = crypto.randomBytes(32).toString('hex');
@@ -124,7 +88,6 @@ authRouter.post('/forgot-password', resetLimiter, async (req, res) => {
       'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
       [user.id, hashToken(token), new Date(Date.now() + RESET_TTL_MS)]
     );
-    const appUrl = (process.env.APP_URL || 'http://localhost:5173').replace(/\/$/, '');
     try {
       await sendMail({
         to: email,
@@ -132,33 +95,28 @@ authRouter.post('/forgot-password', resetLimiter, async (req, res) => {
         text:
           `Someone asked to reset the password for this Moodloom account.\n\n` +
           `Open this link to choose a new password (valid for 1 hour, one use):\n` +
-          `${appUrl}/?reset_token=${token}\n\n` +
-          `If that wasn't you, ignore this email — your password stays the same.`,
+          `${config.appUrl}/reset?token=${token}\n\n` +
+          `If that wasn't you, ignore this email and your password stays the same.`,
       });
     } catch (err) {
       // Don't leak delivery failures to the caller (it would reveal the account exists).
       console.error('Failed to send reset email:', err.message);
     }
   }
-
   res.json({ ok: true, message: 'If an account exists for that email, a reset link is on its way.' });
 });
 
 /**
  * POST /auth/reset-password
  * Redeems a reset token and sets a new password. The token is consumed
- * atomically (UPDATE ... RETURNING) so it can't be used twice, even
- * concurrently. All of the user's other tokens are invalidated too.
+ * atomically so it can't be used twice, and every session the account had
+ * is signed out.
  */
 authRouter.post('/reset-password', resetLimiter, async (req, res) => {
-  const { token, password } = req.body;
-  if (!token || typeof token !== 'string' || !password) {
-    return res.status(400).json({ error: 'token and password are required' });
-  }
-  if (password.length < 8) {
-    return res.status(400).json({ error: 'password must be at least 8 characters' });
-  }
-
+  const { token, password } = parse(
+    z.object({ token: z.string({ error: 'token is required' }).min(1).max(200), password: newPasswordSchema }),
+    req.body
+  );
   const consumed = await pool.query(
     `UPDATE password_reset_tokens SET used_at = now()
      WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
@@ -166,86 +124,59 @@ authRouter.post('/reset-password', resetLimiter, async (req, res) => {
     [hashToken(token)]
   );
   if (consumed.rows.length === 0) {
-    return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.' });
+    throw new HttpError(400, 'This reset link is invalid or has expired. Request a new one.', 'BAD_RESET_TOKEN');
   }
-
   const userId = consumed.rows[0].user_id;
   const passwordHash = await bcrypt.hash(password, 10);
-  await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, userId]);
+  const updated = await pool.query(
+    'UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2 RETURNING id, token_version',
+    [passwordHash, userId]
+  );
   await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [userId]);
-
-  res.json({ token: signToken(userId) });
+  res.json({ token: signToken(updated.rows[0]) });
 });
 
-// Unambiguous alphabet (no 0/O, 1/I/L) so a human can read a code aloud or
-// type it without second-guessing a character. 8 chars from a 32-char
-// alphabet is ~1.1e12 possible codes, combined with a 5-minute expiry and
-// one-time redemption (deleted the moment it's used) — brute-forcing this
-// within its lifetime is not practically feasible.
+// Unambiguous alphabet (no 0/O, 1/I/L) so a code can be read aloud or typed
+// without second-guessing a character.
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const CODE_LENGTH = 8;
 const CODE_TTL_MS = 5 * 60 * 1000;
 
 function generateCode() {
-  const bytes = crypto.randomBytes(CODE_LENGTH);
   let code = '';
-  for (let i = 0; i < CODE_LENGTH; i++) {
-    code += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
-  }
+  // randomInt is uniform; taking bytes modulo the alphabet size would favour
+  // the first few characters slightly.
+  for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
   return code;
 }
 
 /**
  * POST /auth/pairing-code
- * Called by the WEB APP (already authenticated) to generate a short-lived,
- * one-time code the browser extension can redeem to log into this same
- * account. This is the fix for a real gap: without it, the extension and web
- * app silently create two separate anonymous accounts and never see each
- * other's data.
+ * Called by the signed-in web app: a short-lived, one-time code the browser
+ * extension redeems to join this same account.
  */
 authRouter.post('/pairing-code', requireAuth, authLimiter, async (req, res) => {
-  // Clear out this user's old unused codes first so there's never more than
-  // one live code per account lying around.
-  await pool.query(
-    'DELETE FROM pairing_codes WHERE user_id = $1',
-    [req.userId]
-  );
-
+  await pool.query('DELETE FROM pairing_codes WHERE user_id = $1 OR expires_at < now()', [req.userId]);
   const code = generateCode();
   const expiresAt = new Date(Date.now() + CODE_TTL_MS);
-
-  await pool.query(
-    'INSERT INTO pairing_codes (code, user_id, expires_at) VALUES ($1, $2, $3)',
-    [code, req.userId, expiresAt]
-  );
-
+  await pool.query('INSERT INTO pairing_codes (code, user_id, expires_at) VALUES ($1, $2, $3)', [code, req.userId, expiresAt]);
   res.status(201).json({ code, expiresAt: expiresAt.toISOString() });
 });
 
 /**
  * POST /auth/pair
- * Called by the EXTENSION (no token yet) to redeem a pairing code generated
- * by the web app, and get back a token for that SAME account. One-time use:
- * the code is deleted the moment it's redeemed, whether or not it succeeds
- * against an expired row, so it can't be replayed.
+ * Called by the extension (no token yet) to redeem a pairing code. One use:
+ * the code is deleted the moment it is redeemed.
  */
 authRouter.post('/pair', pairLimiter, async (req, res) => {
-  const { code } = req.body;
-  if (!code || typeof code !== 'string') {
-    return res.status(400).json({ error: 'code is required' });
-  }
-
-  const normalized = code.trim().toUpperCase();
-
+  const { code } = parse(z.object({ code: z.string({ error: 'code is required' }).trim().min(1, 'code is required').max(32) }), req.body);
   const result = await pool.query(
     'DELETE FROM pairing_codes WHERE code = $1 AND expires_at > now() RETURNING user_id',
-    [normalized]
+    [code.toUpperCase()]
   );
-
   if (result.rows.length === 0) {
-    return res.status(400).json({ error: 'That code is invalid or has expired. Generate a new one from the web app.' });
+    throw new HttpError(400, 'That code is invalid or has expired. Generate a new one from the web app.', 'BAD_PAIRING_CODE');
   }
-
-  const token = signToken(result.rows[0].user_id);
-  res.json({ token });
+  const user = await pool.query('SELECT id, token_version FROM users WHERE id = $1', [result.rows[0].user_id]);
+  res.json({ token: signToken(user.rows[0]) });
 });

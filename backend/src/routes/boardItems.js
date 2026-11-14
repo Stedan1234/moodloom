@@ -3,330 +3,382 @@ import multer from 'multer';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import { pool } from '../db/pool.js';
+import { config } from '../config.js';
 import { requireAuth } from '../middleware/auth.js';
+import { projectAccess, touchProject } from '../middleware/project.js';
+import { uploadLimiter } from '../middleware/rateLimit.js';
+import { HttpError } from '../lib/errors.js';
+import { parse, z, idParam, text } from '../lib/validate.js';
+import * as storage from '../lib/storage.js';
 import { detectMedia } from '../services/mediaDetector.js';
 import { fetchPagePreview } from '../services/pagePreview.js';
-import { UPLOADS_DIR, PUBLIC_BASE_URL, MAX_UPLOAD_BYTES, ALLOWED_MIME_TYPES } from '../config/uploads.js';
+import { classifyUpload, cleanFileName, maxUploadBytes } from '../services/files.js';
+import { imageSize } from '../services/analysis.js';
+import { ITEM_COLUMNS, serializeItem } from '../services/serialize.js';
+import { queueItem } from '../services/items.js';
+import { assertCanStore } from '../services/plans.js';
+import { loadProjectVectors } from '../services/ai/store.js';
+import { nearest } from '../services/ai/similarity.js';
 
-const MIME_EXTENSIONS = {
-  'image/png': '.png',
-  'image/jpeg': '.jpg',
-  'image/gif': '.gif',
-  'image/webp': '.webp',
-};
-
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOADS_DIR,
-    // Never trust the client-supplied filename — it's attacker-controlled
-    // input (could contain path traversal characters, or just collide with
-    // another user's file). Generate a random name instead, with an
-    // extension derived from the verified mimetype, not the original name.
-    filename: (req, file, cb) => {
-      const ext = MIME_EXTENSIONS[file.mimetype] || '';
-      cb(null, `${crypto.randomUUID()}${ext}`);
-    },
-  }),
-  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
-  fileFilter: (req, file, cb) => {
-    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
-      return cb(new Error('UNSUPPORTED_FILE_TYPE'));
-    }
-    cb(null, true);
-  },
-});
-
-// mergeParams so we can read :projectId from the parent router (mounted at /projects/:projectId/items)
+// mergeParams: mounted at /projects/:projectId/items
 export const boardItemsRouter = Router({ mergeParams: true });
 boardItemsRouter.use(requireAuth);
 
-// Confirms the project belongs to the current user before letting anything
-// touch its items — same ownership check pattern as projects.js.
-async function assertProjectOwnership(req, res) {
-  const result = await pool.query('SELECT id FROM projects WHERE id = $1 AND user_id = $2', [
-    req.params.projectId,
-    req.userId,
-  ]);
-  if (result.rows.length === 0) {
-    res.status(404).json({ error: 'Project not found' });
-    return false;
-  }
-  return true;
+// Uploads land in a hidden temp folder first (express.static never serves
+// dotfiles), under a random name, and only move into place once the bytes
+// have been identified and accepted.
+const TEMP_DIR = path.join(config.uploadsDir, '.incoming');
+fs.mkdirSync(TEMP_DIR, { recursive: true });
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: TEMP_DIR,
+    filename: (req, file, cb) => cb(null, crypto.randomUUID()),
+  }),
+  limits: { fileSize: maxUploadBytes, files: 1, fields: 10, fieldSize: 20_000 },
+});
+
+function receiveFile(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return next(new HttpError(413, `That file is too large (${Math.round(maxUploadBytes / 1048576)}MB max).`, 'FILE_TOO_LARGE'));
+      }
+      return next(new HttpError(400, 'That upload could not be read.', 'BAD_UPLOAD'));
+    }
+    next(err);
+  });
 }
 
-// Resolves a client-supplied categoryId into a safe value to store: null
-// (uncategorized) if omitted, or the id itself once confirmed to actually
-// belong to this project — never trust a raw id straight from the request,
-// since it could name a category from an entirely different project.
+const tagsSchema = z
+  .array(z.string().trim().toLowerCase().min(1).max(40))
+  .max(20, 'Up to 20 tags per reference')
+  .transform((tags) => [...new Set(tags)]);
+
+// A client-supplied category id is only trusted once it's confirmed to
+// belong to THIS project.
 async function resolveCategoryId(projectId, categoryId) {
   if (categoryId === undefined || categoryId === null || categoryId === '') return null;
-  const check = await pool.query('SELECT id FROM categories WHERE id = $1 AND project_id = $2', [
-    categoryId,
-    projectId,
-  ]);
-  if (check.rows.length === 0) {
-    return undefined; // signals "invalid" to the caller
-  }
-  return check.rows[0].id;
+  const id = idParam(String(categoryId));
+  if (!id) throw new HttpError(400, 'Invalid category', 'BAD_CATEGORY');
+  const check = await pool.query('SELECT id FROM categories WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (check.rows.length === 0) throw new HttpError(400, 'Invalid category', 'BAD_CATEGORY');
+  return id;
 }
 
-const ITEM_FIELDS = 'id, source_url, media_type, title, thumbnail_url, embed_html, position, category_id, created_at';
-
-// GET /projects/:projectId/items — the fixed-grid board contents, in position order
-boardItemsRouter.get('/', async (req, res) => {
-  if (!(await assertProjectOwnership(req, res))) return;
-
+async function nextPosition(projectId) {
   const result = await pool.query(
-    `SELECT ${ITEM_FIELDS} FROM board_items WHERE project_id = $1 ORDER BY position ASC, created_at ASC`,
-    [req.params.projectId]
+    'SELECT COALESCE(MAX(position), -1) + 1 AS next, COUNT(*)::int AS n FROM board_items WHERE project_id = $1',
+    [projectId]
   );
-  res.json(result.rows);
+  if (result.rows[0].n >= config.limits.itemsPerProject) {
+    throw new HttpError(400, `A board holds up to ${config.limits.itemsPerProject} references. Split this project to add more.`, 'BOARD_FULL');
+  }
+  return result.rows[0].next;
+}
+
+// GET /projects/:projectId/items — the board, in position order.
+boardItemsRouter.get('/', projectAccess('viewer'), async (req, res) => {
+  const result = await pool.query(
+    `SELECT ${ITEM_COLUMNS} FROM board_items WHERE project_id = $1 ORDER BY position ASC, id ASC`,
+    [req.project.id]
+  );
+  res.json(result.rows.map(serializeItem));
 });
 
 /**
- * POST /projects/:projectId/items — THE core-loop endpoint.
- * This is what the browser extension calls the moment someone hits
- * "Add to Moodloom" on a page — capture-at-source, in one action.
- * Body: { sourceUrl, title?, categoryId? }
+ * POST /projects/:projectId/items — capture a URL. THE core-loop endpoint:
+ * what the extension calls the moment someone clicks "Add to Moodloom".
+ * Body: { sourceUrl, title?, categoryId?, note?, tags?, pageUrl? }
+ * pageUrl is where an image was found, when sourceUrl is the image itself.
  */
-boardItemsRouter.post('/', async (req, res) => {
-  if (!(await assertProjectOwnership(req, res))) return;
-
-  const { sourceUrl, title, categoryId } = req.body;
-  if (!sourceUrl || !sourceUrl.trim()) {
-    return res.status(400).json({ error: 'sourceUrl is required' });
-  }
-
-  const resolvedCategoryId = await resolveCategoryId(req.params.projectId, categoryId);
-  if (resolvedCategoryId === undefined) {
-    return res.status(400).json({ error: 'Invalid category' });
-  }
+boardItemsRouter.post('/', projectAccess('editor'), async (req, res) => {
+  const body = parse(
+    z.object({
+      sourceUrl: z.string({ error: 'sourceUrl is required' }).trim().min(1, 'sourceUrl is required').max(4000, 'That URL is too long'),
+      title: text(300).optional().nullable(),
+      note: text(5000).optional().nullable(),
+      tags: tagsSchema.optional(),
+      categoryId: z.union([z.number(), z.string(), z.null()]).optional(),
+      pageUrl: z.string().trim().max(4000).optional().nullable(),
+    }),
+    req.body
+  );
 
   let parsedUrl;
   try {
-    parsedUrl = new URL(sourceUrl.trim());
+    parsedUrl = new URL(body.sourceUrl);
   } catch {
-    return res.status(400).json({ error: 'sourceUrl must be a valid URL' });
+    throw new HttpError(400, 'sourceUrl must be a valid URL', 'BAD_URL');
   }
-
+  // Only web addresses. A javascript: or data: URL stored here would later
+  // be rendered as a clickable link.
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    throw new HttpError(400, 'Only http and https links can be added', 'BAD_URL');
+  }
   const normalizedUrl = parsedUrl.toString();
+  const categoryId = await resolveCategoryId(req.project.id, body.categoryId);
 
-  // Duplicate-capture guard: clicking "Add to board" twice (a double-click,
-  // or a slow network making someone click again) previously created two
-  // separate board items for the same reference. Instead of inserting again,
-  // return the item that's already there — same shape, but with
-  // alreadyOnBoard so the caller can tell the person nothing new was added,
-  // rather than silently duplicating it on the board. Note this doesn't
-  // move it to whatever category was picked this time — a duplicate capture
-  // leaves the existing item's category alone.
+  // Duplicate-capture guard: return the item that's already there instead of
+  // a second copy (a double click, a retry on a slow connection).
   const existing = await pool.query(
-    `SELECT ${ITEM_FIELDS}
-     FROM board_items WHERE project_id = $1 AND source_url = $2
-     ORDER BY created_at ASC LIMIT 1`,
-    [req.params.projectId, normalizedUrl]
+    `SELECT ${ITEM_COLUMNS} FROM board_items WHERE project_id = $1 AND source_url = $2 LIMIT 1`,
+    [req.project.id, normalizedUrl]
   );
   if (existing.rows.length > 0) {
-    return res.status(200).json({ ...existing.rows[0], alreadyOnBoard: true });
+    return res.status(200).json({ ...serializeItem(existing.rows[0]), alreadyOnBoard: true });
   }
 
   const detected = detectMedia(normalizedUrl);
-  let { mediaType, embedHtml, thumbnailUrl } = detected;
-  let resolvedTitle = title?.trim() || null;
+  let thumbnailUrl = detected.thumbnailUrl;
+  let title = body.title || null;
+  const meta = { ...detected.meta };
 
-  // For a generic link (not an image, not a known video provider), the
-  // capture used to save with zero visual — just a text card. Now fetch the
-  // page's own social-preview image/title (what it already publishes for
-  // Twitter/iMessage/Slack unfurls) and use that as a real thumbnail. Best
-  // effort: if the site blocks this, times out, or has no og tags, the
-  // capture still succeeds exactly as it did before — this only adds a
-  // thumbnail when one is actually available.
-  if (mediaType === 'link') {
-    const preview = await fetchPagePreview(normalizedUrl);
-    if (preview.ogImage) thumbnailUrl = preview.ogImage;
-    if (!resolvedTitle && preview.ogTitle) resolvedTitle = preview.ogTitle;
+  if (body.pageUrl) {
+    try {
+      const found = new URL(body.pageUrl);
+      if (['http:', 'https:'].includes(found.protocol)) meta.foundOn = found.toString();
+    } catch {
+      /* not a URL: leave it out */
+    }
   }
 
-  const nextPosition = await pool.query(
-    'SELECT COALESCE(MAX(position), -1) + 1 AS next FROM board_items WHERE project_id = $1',
-    [req.params.projectId]
-  );
+  // Best effort: the page's own preview image and title. If the site blocks
+  // it or has none, the capture still succeeds without them.
+  if (detected.wantsPreview) {
+    const preview = await fetchPagePreview(normalizedUrl);
+    if (!thumbnailUrl && preview.ogImage) thumbnailUrl = preview.ogImage;
+    if (!title && preview.ogTitle) title = preview.ogTitle;
+  }
 
-  let result;
+  const position = await nextPosition(req.project.id);
+  let inserted;
   try {
-    result = await pool.query(
-      `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position, category_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING ${ITEM_FIELDS}`,
-      [
-        req.params.projectId,
-        normalizedUrl,
-        mediaType,
-        resolvedTitle,
-        thumbnailUrl,
-        embedHtml,
-        nextPosition.rows[0].next,
-        resolvedCategoryId,
-      ]
+    inserted = await pool.query(
+      `INSERT INTO board_items (project_id, source_url, media_type, title, note, tags, thumbnail_url, meta, position, category_id, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING ${ITEM_COLUMNS}`,
+      [req.project.id, normalizedUrl, detected.mediaType, title, body.note || null, body.tags || [], thumbnailUrl, JSON.stringify(meta), position, categoryId, req.userId]
     );
   } catch (err) {
-    // 23505 = unique_violation. This means the SELECT-then-INSERT race above
-    // actually happened (two near-simultaneous captures of the same URL) —
-    // the database constraint caught what the earlier check couldn't. Same
-    // graceful response as the normal duplicate path, not a 500.
+    // 23505 = unique_violation: two near-simultaneous captures of the same
+    // URL raced past the check above. Same graceful answer, not a 500.
     if (err.code === '23505') {
-      const raceWinner = await pool.query(
-        `SELECT ${ITEM_FIELDS}
-         FROM board_items WHERE project_id = $1 AND source_url = $2`,
-        [req.params.projectId, normalizedUrl]
-      );
-      return res.status(200).json({ ...raceWinner.rows[0], alreadyOnBoard: true });
+      const winner = await pool.query(`SELECT ${ITEM_COLUMNS} FROM board_items WHERE project_id = $1 AND source_url = $2`, [
+        req.project.id,
+        normalizedUrl,
+      ]);
+      return res.status(200).json({ ...serializeItem(winner.rows[0]), alreadyOnBoard: true });
     }
     throw err;
   }
 
-  await pool.query('UPDATE projects SET updated_at = now() WHERE id = $1', [req.params.projectId]);
-
-  res.status(201).json(result.rows[0]);
+  await touchProject(req.project.id);
+  queueItem(inserted.rows[0].id);
+  res.status(201).json(serializeItem(inserted.rows[0]));
 });
 
 /**
- * POST /projects/:projectId/items/upload — captures an image from the
- * user's own computer or clipboard (a saved reference file, or a pasted
- * screenshot), rather than a URL. Everything else in this file references
- * something already living on the web; this is the one path where Moodloom
- * itself stores the actual bytes.
- * multipart/form-data, field name "file".
+ * POST /projects/:projectId/items/upload — add a file from the user's own
+ * computer, camera or clipboard. multipart/form-data, field "file", plus
+ * optional categoryId, title, note.
  */
-boardItemsRouter.post('/upload', (req, res, next) => {
-  upload.single('file')(req, res, (err) => {
-    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ error: 'That image is too large (15MB max).' });
+boardItemsRouter.post('/upload', projectAccess('editor'), uploadLimiter, receiveFile, async (req, res) => {
+  if (!req.file) throw new HttpError(400, 'No file was uploaded.', 'BAD_UPLOAD');
+  const tempPath = req.file.path;
+  let finalKey = null;
+  try {
+    const fields = parse(
+      z.object({ title: text(300).optional(), note: text(5000).optional(), categoryId: z.string().optional() }),
+      req.body
+    );
+    const fileName = cleanFileName(req.file.originalname);
+    const kind = await classifyUpload(tempPath, fileName, req.file.size);
+    const categoryId = await resolveCategoryId(req.project.id, fields.categoryId);
+    await assertCanStore(req.project.user_id, req.file.size);
+    const position = await nextPosition(req.project.id);
+
+    // Know the picture's proportions straight away so the board can lay it
+    // out before the image has loaded. (The rest of the analysis is queued.)
+    let width = null;
+    let height = null;
+    if (kind.mediaType === 'image' && kind.ext !== 'svg') {
+      try {
+        const size = await imageSize(await fsp.readFile(tempPath));
+        width = size.width;
+        height = size.height;
+      } catch {
+        throw new HttpError(415, 'That image could not be read. It may be damaged.', 'UNSUPPORTED_FILE');
+      }
     }
-    if (err?.message === 'UNSUPPORTED_FILE_TYPE') {
-      return res.status(400).json({ error: 'Only PNG, JPEG, GIF, or WEBP images are supported.' });
-    }
-    if (err) return next(err);
-    next();
-  });
-}, async (req, res) => {
-  // multer has already written the file to disk by this point (it runs
-  // before this handler) — any early return past here without inserting a
-  // board_item row must clean it up first, or it leaks as a permanent
-  // orphan with nothing ever pointing at it. All bail-out paths below go
-  // through this rather than a bare `return`.
-  function rejectAndCleanup(status, error) {
-    if (req.file) {
-      fs.unlink(req.file.path, (err) => {
-        if (err && err.code !== 'ENOENT') {
-          console.error(`Failed to clean up rejected upload ${req.file.filename}:`, err.message);
-        }
-      });
-    }
-    res.status(status).json({ error });
+
+    finalKey = storage.newKey(kind.ext);
+    await fsp.rename(tempPath, storage.filePath(finalKey));
+
+    const inserted = await pool.query(
+      `INSERT INTO board_items
+         (project_id, source_url, media_type, title, note, position, category_id, storage_key, file_name, file_size, mime_type, width, height, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       RETURNING ${ITEM_COLUMNS}`,
+      [
+        req.project.id,
+        `moodloom-upload:${finalKey}`,
+        kind.mediaType,
+        fields.title || null,
+        fields.note || null,
+        position,
+        categoryId,
+        finalKey,
+        fileName,
+        req.file.size,
+        kind.mime,
+        width,
+        height,
+        req.userId,
+      ]
+    );
+    await touchProject(req.project.id);
+    queueItem(inserted.rows[0].id);
+    res.status(201).json(serializeItem(inserted.rows[0]));
+  } catch (err) {
+    // Whatever went wrong, don't leave the bytes behind with nothing
+    // pointing at them.
+    await fsp.unlink(tempPath).catch(() => {});
+    if (finalKey) await storage.remove(finalKey);
+    throw err;
   }
-
-  if (!(await assertProjectOwnership(req, res))) {
-    if (req.file) fs.unlink(req.file.path, () => {});
-    return;
-  }
-
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file was uploaded.' });
-  }
-
-  const resolvedCategoryId = await resolveCategoryId(req.params.projectId, req.body.categoryId);
-  if (resolvedCategoryId === undefined) {
-    return rejectAndCleanup(400, 'Invalid category');
-  }
-
-  const publicUrl = `${PUBLIC_BASE_URL}/uploads/${req.file.filename}`;
-
-  const nextPosition = await pool.query(
-    'SELECT COALESCE(MAX(position), -1) + 1 AS next FROM board_items WHERE project_id = $1',
-    [req.params.projectId]
-  );
-
-  const result = await pool.query(
-    `INSERT INTO board_items (project_id, source_url, media_type, title, thumbnail_url, embed_html, position, category_id)
-     VALUES ($1, $2, 'image', $3, $2, NULL, $4, $5)
-     RETURNING ${ITEM_FIELDS}`,
-    [req.params.projectId, publicUrl, req.body.title?.trim() || null, nextPosition.rows[0].next, resolvedCategoryId]
-  );
-
-  await pool.query('UPDATE projects SET updated_at = now() WHERE id = $1', [req.params.projectId]);
-
-  res.status(201).json(result.rows[0]);
 });
 
-// PATCH /projects/:projectId/items/:itemId — reordering (position) and/or
-// moving an item to a different category (or back to uncategorized, via
-// categoryId: null). v1's board is still a fixed grid, not a freeform canvas.
-boardItemsRouter.patch('/:itemId', async (req, res) => {
-  if (!(await assertProjectOwnership(req, res))) return;
+/**
+ * POST /projects/:projectId/items/quote — a text card: a passage lifted
+ * from a PDF on the board, or words typed in directly.
+ * Body: { text, title?, categoryId?, fromItemId?, page? }
+ */
+boardItemsRouter.post('/quote', projectAccess('editor'), async (req, res) => {
+  const body = parse(
+    z.object({
+      text: z.string({ error: 'text is required' }).trim().min(1, 'text is required').max(4000, 'That passage is too long (4,000 characters max)'),
+      title: text(300).optional().nullable(),
+      tags: tagsSchema.optional(),
+      categoryId: z.union([z.number(), z.string(), z.null()]).optional(),
+      fromItemId: z.number().int().positive().optional().nullable(),
+      page: z.number().int().positive().max(100000).optional().nullable(),
+    }),
+    req.body
+  );
+  const categoryId = await resolveCategoryId(req.project.id, body.categoryId);
+  const meta = {};
+  if (body.fromItemId) {
+    const source = await pool.query('SELECT id, title, file_name FROM board_items WHERE id = $1 AND project_id = $2', [
+      body.fromItemId,
+      req.project.id,
+    ]);
+    if (source.rows.length === 0) throw new HttpError(400, 'That source is not on this board', 'BAD_SOURCE');
+    meta.fromItemId = source.rows[0].id;
+    meta.fromTitle = source.rows[0].title || source.rows[0].file_name || null;
+    if (body.page) meta.page = body.page;
+  }
+  const position = await nextPosition(req.project.id);
+  const inserted = await pool.query(
+    `INSERT INTO board_items (project_id, source_url, media_type, title, note, tags, meta, position, category_id, analyzed_at, created_by)
+     VALUES ($1, $2, 'quote', $3, $4, $5, $6, $7, $8, now(), $9)
+     RETURNING ${ITEM_COLUMNS}`,
+    [req.project.id, `moodloom-quote:${crypto.randomUUID()}`, body.title || null, body.text, body.tags || [], JSON.stringify(meta), position, categoryId, req.userId]
+  );
+  await touchProject(req.project.id);
+  res.status(201).json(serializeItem(inserted.rows[0]));
+});
 
-  const { position, categoryId } = req.body;
-  if (position === undefined && categoryId === undefined) {
-    return res.status(400).json({ error: 'position or categoryId is required' });
-  }
-  if (position !== undefined && typeof position !== 'number') {
-    return res.status(400).json({ error: 'position must be a number' });
-  }
+// POST /projects/:projectId/items/reorder — { ids: [...] } in the order the
+// board should show them.
+boardItemsRouter.post('/reorder', projectAccess('editor'), async (req, res) => {
+  const { ids } = parse(z.object({ ids: z.array(z.number().int().positive()).min(1).max(config.limits.itemsPerProject) }), req.body);
+  await pool.query(
+    `UPDATE board_items i SET position = o.ord - 1
+     FROM unnest($1::int[]) WITH ORDINALITY AS o(id, ord)
+     WHERE i.id = o.id AND i.project_id = $2`,
+    [ids, req.project.id]
+  );
+  res.json({ ok: true });
+});
 
-  let resolvedCategoryId;
-  if (categoryId !== undefined) {
-    resolvedCategoryId = await resolveCategoryId(req.params.projectId, categoryId);
-    if (resolvedCategoryId === undefined) {
-      return res.status(400).json({ error: 'Invalid category' });
-    }
-  }
+function itemId(req) {
+  const id = idParam(req.params.itemId);
+  if (!id) throw new HttpError(404, 'Item not found');
+  return id;
+}
+
+// PATCH /projects/:projectId/items/:itemId — edit what the designer owns
+// about a reference: its title, note, tags, category and place on the board.
+boardItemsRouter.patch('/:itemId', projectAccess('editor'), async (req, res) => {
+  const id = itemId(req);
+  const body = parse(
+    z.object({
+      position: z.number().int().min(0).optional(),
+      categoryId: z.union([z.number(), z.string(), z.null()]).optional(),
+      title: text(300).nullable().optional(),
+      note: text(5000).nullable().optional(),
+      tags: tagsSchema.optional(),
+    }),
+    req.body
+  );
+  if (Object.keys(body).length === 0) throw new HttpError(400, 'Nothing to change', 'VALIDATION');
+  const categoryId = body.categoryId !== undefined ? await resolveCategoryId(req.project.id, body.categoryId) : null;
 
   const result = await pool.query(
     `UPDATE board_items SET
        position = COALESCE($1, position),
-       category_id = CASE WHEN $2 THEN $3 ELSE category_id END
-     WHERE id = $4 AND project_id = $5
-     RETURNING ${ITEM_FIELDS}`,
-    [position ?? null, categoryId !== undefined, resolvedCategoryId ?? null, req.params.itemId, req.params.projectId]
+       category_id = CASE WHEN $2 THEN $3 ELSE category_id END,
+       title = CASE WHEN $4 THEN $5 ELSE title END,
+       note = CASE WHEN $6 THEN $7 ELSE note END,
+       tags = COALESCE($8::text[], tags)
+     WHERE id = $9 AND project_id = $10
+     RETURNING ${ITEM_COLUMNS}`,
+    [
+      body.position ?? null,
+      body.categoryId !== undefined,
+      categoryId,
+      body.title !== undefined,
+      body.title || null,
+      body.note !== undefined,
+      body.note || null,
+      body.tags ?? null,
+      id,
+      req.project.id,
+    ]
   );
-  if (result.rows.length === 0) {
-    return res.status(404).json({ error: 'Item not found' });
-  }
-  res.json(result.rows[0]);
+  if (result.rows.length === 0) throw new HttpError(404, 'Item not found');
+  await touchProject(req.project.id);
+  res.json(serializeItem(result.rows[0]));
 });
 
 // DELETE /projects/:projectId/items/:itemId
-boardItemsRouter.delete('/:itemId', async (req, res) => {
-  if (!(await assertProjectOwnership(req, res))) return;
-
+boardItemsRouter.delete('/:itemId', projectAccess('editor'), async (req, res) => {
+  const id = itemId(req);
   const result = await pool.query(
-    'DELETE FROM board_items WHERE id = $1 AND project_id = $2 RETURNING id, source_url',
-    [req.params.itemId, req.params.projectId]
+    'DELETE FROM board_items WHERE id = $1 AND project_id = $2 RETURNING storage_key, thumb_key',
+    [id, req.project.id]
   );
-  if (result.rows.length === 0) {
-    return res.status(404).json({ error: 'Item not found' });
-  }
-
-  // If this item's source_url points at a file WE stored (an upload, not a
-  // captured link), clean it up from disk. Otherwise uploads/ would
-  // accumulate orphaned files forever — every deleted upload item leaks
-  // 15MB-max of disk with nothing to ever reclaim it.
-  const uploadPrefix = `${PUBLIC_BASE_URL}/uploads/`;
-  const deletedUrl = result.rows[0].source_url;
-  if (deletedUrl && deletedUrl.startsWith(uploadPrefix)) {
-    const filename = deletedUrl.slice(uploadPrefix.length);
-    // Guard against a malformed/unexpected value ever being used as a path
-    // (defense in depth — filenames are always our own crypto.randomUUID()
-    // output, but never trust a DB string as a filesystem path without
-    // checking it first).
-    if (/^[a-zA-Z0-9-]+\.(png|jpg|jpeg|gif|webp)$/.test(filename)) {
-      fs.unlink(path.join(UPLOADS_DIR, filename), (err) => {
-        if (err && err.code !== 'ENOENT') {
-          console.error(`Failed to delete uploaded file ${filename}:`, err.message);
-        }
-      });
-    }
-  }
-
+  if (result.rows.length === 0) throw new HttpError(404, 'Item not found');
+  await storage.removeMany([result.rows[0].storage_key, result.rows[0].thumb_key]);
   res.status(204).send();
+});
+
+// GET /projects/:projectId/items/:itemId/similar — "more like this", within
+// the project, by feature-vector similarity.
+boardItemsRouter.get('/:itemId/similar', projectAccess('viewer'), async (req, res) => {
+  const id = itemId(req);
+  const vectors = await loadProjectVectors(req.project.id);
+  const target = vectors.find((v) => v.id === id);
+  if (!target) return res.json({ available: false, items: [] });
+  const ranked = nearest(target.vector, vectors.filter((v) => v.id !== id), 8).filter((r) => r.score > 0.35);
+  if (ranked.length === 0) return res.json({ available: true, items: [] });
+  const rows = await pool.query(`SELECT ${ITEM_COLUMNS} FROM board_items WHERE id = ANY($1::int[])`, [ranked.map((r) => r.id)]);
+  const byId = new Map(rows.rows.map((r) => [r.id, r]));
+  res.json({
+    available: true,
+    items: ranked.filter((r) => byId.has(r.id)).map((r) => ({ ...serializeItem(byId.get(r.id)), similarity: Math.round(r.score * 100) / 100 })),
+  });
 });

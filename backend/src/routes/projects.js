@@ -1,121 +1,136 @@
 import { Router } from 'express';
-import fs from 'fs';
-import path from 'path';
-import { pool } from '../db/pool.js';
+import { pool, withTransaction } from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
-import { UPLOADS_DIR, PUBLIC_BASE_URL } from '../config/uploads.js';
+import { projectAccess } from '../middleware/project.js';
 import { STARTER_CATEGORY_NAMES } from '../db/starterCategories.js';
+import { parse, z, requiredText, text } from '../lib/validate.js';
+import * as storage from '../lib/storage.js';
+import { publicUrl } from '../lib/storage.js';
+import { serializeProject } from '../services/serialize.js';
+import { assertCanCreateProject } from '../services/plans.js';
+import { streamProjectExport } from '../services/exporter.js';
 
 export const projectsRouter = Router();
 projectsRouter.use(requireAuth);
 
-/**
- * Every query below filters by req.userId, so a project belonging to one user
- * is never visible or writable by another — this is the whole ownership model
- * for v1, since there is no team/sharing feature yet (explicitly deferred).
- */
+export const STAGES = ['brief', 'research', 'concepts', 'refine', 'deliver'];
 
-// GET /projects — list all of the current user's projects
+const briefSchema = z.object({
+  client: text(200).optional(),
+  summary: text(2000).optional(),
+  audience: text(2000).optional(),
+  goals: text(2000).optional(),
+  deliverables: text(2000).optional(),
+  constraints: text(2000).optional(),
+  tone: text(600).optional(),
+  deadline: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2027-01-31'), z.literal('')]).optional(),
+  keywords: z.array(text(40)).max(24).optional(),
+});
+
+// GET /projects — every project the caller owns or has been added to, with
+// enough for a card: item count and a few preview images.
 projectsRouter.get('/', async (req, res) => {
   const result = await pool.query(
-    'SELECT id, name, created_at, updated_at FROM projects WHERE user_id = $1 ORDER BY updated_at DESC',
+    `SELECT p.id, p.name, p.brief, p.stage, p.ai_enabled, p.created_at, p.updated_at,
+            CASE WHEN p.user_id = $1 THEN 'owner' ELSE m.role END AS role,
+            (SELECT COUNT(*)::int FROM board_items i WHERE i.project_id = p.id) AS item_count,
+            (SELECT COALESCE(json_agg(t), '[]'::json) FROM (
+               SELECT i.thumb_key, i.storage_key, i.thumbnail_url, i.media_type, i.palette
+               FROM board_items i
+               WHERE i.project_id = p.id AND (i.thumb_key IS NOT NULL OR i.thumbnail_url IS NOT NULL OR (i.storage_key IS NOT NULL AND i.media_type = 'image'))
+               ORDER BY i.position DESC, i.id DESC LIMIT 4
+             ) t) AS covers
+     FROM projects p
+     LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = $1
+     WHERE p.user_id = $1 OR m.user_id IS NOT NULL
+     ORDER BY p.updated_at DESC`,
     [req.userId]
   );
-  res.json(result.rows);
+  res.json(
+    result.rows.map((row) => ({
+      ...serializeProject(row),
+      item_count: row.item_count,
+      covers: row.covers.map((c) => ({
+        url: c.thumb_key ? publicUrl(c.thumb_key) : c.storage_key ? publicUrl(c.storage_key) : c.thumbnail_url,
+        color: c.palette?.[0]?.hex || null,
+      })),
+    }))
+  );
 });
 
-// POST /projects — create a new project (this is the "create new project on the fly"
-// flow the capture extension needs)
+// POST /projects — create a project (also what the extension's "new project
+// on the fly" calls). Seeds the starter categories.
 projectsRouter.post('/', async (req, res) => {
-  const { name } = req.body;
-  if (!name || !name.trim()) {
-    return res.status(400).json({ error: 'name is required' });
-  }
-  const result = await pool.query(
-    'INSERT INTO projects (user_id, name) VALUES ($1, $2) RETURNING id, name, created_at, updated_at',
-    [req.userId, name.trim()]
-  );
+  const { name } = parse(z.object({ name: requiredText(120, 'name') }), req.body);
+  await assertCanCreateProject(req.userId);
 
-  // Seed a starter set of categories so a brand-new project isn't just one
-  // undifferentiated board from the start — raised during dogfooding as a
-  // way to separate design inspiration from post ideas from video direction
-  // etc. Fully editable afterwards (see routes/categories.js); this is just
-  // a helpful default, not a fixed structure.
-  for (let i = 0; i < STARTER_CATEGORY_NAMES.length; i++) {
-    await pool.query('INSERT INTO categories (project_id, name, position) VALUES ($1, $2, $3)', [
-      result.rows[0].id,
-      STARTER_CATEGORY_NAMES[i],
-      i,
-    ]);
-  }
-
-  res.status(201).json(result.rows[0]);
-});
-
-// Helper: confirms the project exists and belongs to req.userId, or sends a 404.
-// Returns the project row on success, or null (after sending a response) on failure.
-async function findOwnedProject(req, res) {
-  const result = await pool.query(
-    'SELECT id, name, created_at, updated_at FROM projects WHERE id = $1 AND user_id = $2',
-    [req.params.id, req.userId]
-  );
-  if (result.rows.length === 0) {
-    res.status(404).json({ error: 'Project not found' });
-    return null;
-  }
-  return result.rows[0];
-}
-
-// GET /projects/:id — a single project's details
-projectsRouter.get('/:id', async (req, res) => {
-  const project = await findOwnedProject(req, res);
-  if (!project) return;
-  res.json(project);
-});
-
-// PATCH /projects/:id — rename a project
-projectsRouter.patch('/:id', async (req, res) => {
-  const project = await findOwnedProject(req, res);
-  if (!project) return;
-
-  const { name } = req.body;
-  if (!name || !name.trim()) {
-    return res.status(400).json({ error: 'name is required' });
-  }
-  const result = await pool.query(
-    'UPDATE projects SET name = $1, updated_at = now() WHERE id = $2 RETURNING id, name, created_at, updated_at',
-    [name.trim(), project.id]
-  );
-  res.json(result.rows[0]);
-});
-
-// DELETE /projects/:id
-projectsRouter.delete('/:id', async (req, res) => {
-  const project = await findOwnedProject(req, res);
-  if (!project) return;
-
-  // Deleting a project cascades to its board_items in the DB (see schema.sql
-  // FK), but that cascade never touches the filesystem — an uploaded image's
-  // bytes would be orphaned in uploads/ forever otherwise. The single-item
-  // DELETE route (boardItems.js) does this same cleanup for one item at a
-  // time; this covers the "delete the whole project" path, which skips that
-  // route entirely.
-  const uploadPrefix = `${PUBLIC_BASE_URL}/uploads/`;
-  const uploadedItems = await pool.query(
-    'SELECT source_url FROM board_items WHERE project_id = $1 AND source_url LIKE $2',
-    [project.id, `${uploadPrefix}%`]
-  );
-  for (const row of uploadedItems.rows) {
-    const filename = row.source_url.slice(uploadPrefix.length);
-    if (/^[a-zA-Z0-9-]+\.(png|jpg|jpeg|gif|webp)$/.test(filename)) {
-      fs.unlink(path.join(UPLOADS_DIR, filename), (err) => {
-        if (err && err.code !== 'ENOENT') {
-          console.error(`Failed to delete uploaded file ${filename}:`, err.message);
-        }
-      });
+  const project = await withTransaction(async (client) => {
+    const created = await client.query(
+      'INSERT INTO projects (user_id, name) VALUES ($1, $2) RETURNING id, name, brief, stage, ai_enabled, created_at, updated_at',
+      [req.userId, name]
+    );
+    for (let i = 0; i < STARTER_CATEGORY_NAMES.length; i++) {
+      await client.query('INSERT INTO categories (project_id, name, position) VALUES ($1, $2, $3)', [
+        created.rows[0].id,
+        STARTER_CATEGORY_NAMES[i],
+        i,
+      ]);
     }
-  }
+    return created.rows[0];
+  });
+  res.status(201).json(serializeProject(project, 'owner'));
+});
 
-  await pool.query('DELETE FROM projects WHERE id = $1', [project.id]);
+// GET /projects/:projectId
+projectsRouter.get('/:projectId', projectAccess('viewer'), async (req, res) => {
+  res.json(serializeProject(req.project));
+});
+
+// PATCH /projects/:projectId — rename, edit the brief, move the stage, or
+// switch AI on/off. Editors can change the working fields; the name and the
+// AI consent switch are the owner's.
+projectsRouter.patch('/:projectId', projectAccess('editor'), async (req, res) => {
+  const body = parse(
+    z.object({
+      name: requiredText(120, 'name').optional(),
+      brief: briefSchema.optional(),
+      stage: z.enum(STAGES).optional(),
+      aiEnabled: z.boolean().optional(),
+    }),
+    req.body
+  );
+  if ((body.name !== undefined || body.aiEnabled !== undefined) && req.projectRole !== 'owner') {
+    return res.status(403).json({ error: 'Only the project owner can do that.', code: 'FORBIDDEN_ROLE' });
+  }
+  if (Object.keys(body).length === 0) return res.status(400).json({ error: 'Nothing to change', code: 'VALIDATION' });
+
+  const result = await pool.query(
+    `UPDATE projects SET
+       name = COALESCE($1, name),
+       brief = COALESCE($2::jsonb, brief),
+       stage = COALESCE($3, stage),
+       ai_enabled = COALESCE($4, ai_enabled),
+       updated_at = now()
+     WHERE id = $5
+     RETURNING id, name, brief, stage, ai_enabled, created_at, updated_at`,
+    [body.name ?? null, body.brief ? JSON.stringify(body.brief) : null, body.stage ?? null, body.aiEnabled ?? null, req.project.id]
+  );
+  res.json(serializeProject(result.rows[0], req.projectRole));
+});
+
+// DELETE /projects/:projectId — owner only. The database cascade removes
+// the rows; the stored files have to be removed by hand.
+projectsRouter.delete('/:projectId', projectAccess('owner'), async (req, res) => {
+  const files = await pool.query(
+    'SELECT storage_key, thumb_key FROM board_items WHERE project_id = $1 AND storage_key IS NOT NULL',
+    [req.project.id]
+  );
+  await pool.query('DELETE FROM projects WHERE id = $1', [req.project.id]);
+  await storage.removeMany(files.rows.flatMap((r) => [r.storage_key, r.thumb_key]));
   res.status(204).send();
+});
+
+// GET /projects/:projectId/export — the whole project as a ZIP.
+projectsRouter.get('/:projectId/export', projectAccess('viewer'), async (req, res) => {
+  await streamProjectExport(req.project, res);
 });

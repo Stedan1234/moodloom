@@ -1,66 +1,34 @@
-import 'express-async-errors'; // must be imported before any router that uses async handlers
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
+import { config } from './config.js';
+import { createApp } from './app.js';
+import { pool } from './db/pool.js';
+import { queueBacklog } from './services/items.js';
+import { embedderStatus } from './services/ai/embedders/index.js';
 
-import { authRouter } from './routes/auth.js';
-import { projectsRouter } from './routes/projects.js';
-import { boardItemsRouter } from './routes/boardItems.js';
-import { categoriesRouter } from './routes/categories.js';
-import { workspaceRouter } from './routes/workspace.js';
-import { corsOptions } from './config/cors.js';
-import { UPLOADS_DIR } from './config/uploads.js';
+const app = createApp();
 
-dotenv.config();
+const server = app.listen(config.port, () => {
+  console.log(`Moodloom backend listening on http://localhost:${config.port}`);
+  console.log(
+    `  AI: direction notes ${config.ai.llmProvider === 'none' ? 'off (no ANTHROPIC_API_KEY)' : `via ${config.ai.llmProvider}`}; ` +
+      `similarity via ${embedderStatus().active || 'nothing (AI_EMBEDDER=off)'}`
+  );
+  if (config.frontendDist) console.log(`  Serving the web app from ${config.frontendDist}`);
+  if (config.rateLimitDisabled) console.warn('  WARNING: rate limiting is disabled (RATE_LIMIT_DISABLED). Never run a public server like this.');
 
-const app = express();
+  queueBacklog()
+    .then((n) => n > 0 && console.log(`  Analysing ${n} reference(s) in the background.`))
+    .catch((err) => console.error('Could not queue the analysis backlog:', err.message));
+});
 
-// express-rate-limit (below) keys its counters off req.ip. Behind a reverse
-// proxy/load balancer, req.ip is the PROXY's address unless Express is told
-// to trust the X-Forwarded-For header it sets — without this, every real
-// client would share one rate-limit bucket (or the proxy's own IP would get
-// blocked instead of the actual abuser). Only enable this once actually
-// deployed behind a known, trusted proxy (set TRUST_PROXY, e.g. to "1" for
-// one hop) — trusting it by default on plain localhost would let a client
-// spoof X-Forwarded-For to bypass rate limiting entirely.
-if (process.env.TRUST_PROXY) {
-  app.set('trust proxy', process.env.TRUST_PROXY);
+// Finish in-flight requests, then close the pool, when the host asks the
+// process to stop (a deploy, a restart).
+function shutdown(signal) {
+  console.log(`${signal} received, shutting down.`);
+  server.close(async () => {
+    await pool.end().catch(() => {});
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
 }
-
-// Allowlists the web app's own origin(s) (via ALLOWED_ORIGINS) plus any
-// chrome-extension:// origin (see config/cors.js for why that's safe) —
-// replaces the previous wide-open cors() with no restriction at all.
-app.use(cors(corsOptions()));
-// 1mb (up from the 100kb default) so long rich-text workspace notes still save.
-app.use(express.json({ limit: '1mb' }));
-
-app.get('/health', (req, res) => {
-  res.json({ ok: true, service: 'moodloom-backend' });
-});
-
-// Serves uploaded images (screenshots / files added from someone's own
-// computer) back out at the same PUBLIC_BASE_URL + /uploads/<file> URL
-// that gets stored in board_items.source_url — see config/uploads.js and
-// the POST /upload route in boardItems.js.
-app.use('/uploads', express.static(UPLOADS_DIR));
-
-app.use('/auth', authRouter);
-app.use('/projects', projectsRouter);
-app.use('/projects/:projectId/items', boardItemsRouter);
-app.use('/projects/:projectId/categories', categoriesRouter);
-app.use('/projects/:projectId/workspace', workspaceRouter);
-
-// Catch-all error handler. `express-async-errors` (imported above) makes any
-// rejected promise inside a route handler land here instead of hanging the request.
-app.use((err, req, res, next) => {
-  if (err.message?.startsWith('Origin ') && err.message?.includes('not allowed by CORS')) {
-    return res.status(403).json({ error: 'This origin is not allowed to call this API.' });
-  }
-  console.error(err);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Moodloom backend listening on http://localhost:${PORT}`);
-});
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

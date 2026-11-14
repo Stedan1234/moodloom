@@ -1,49 +1,35 @@
-/**
- * For a generic web page (not an image, not a known video provider), the
- * only preview a captured URL gets today is a bare text card — no visual at
- * all. Real dogfooding surfaced this immediately: capturing a portfolio site
- * like samuella.site as a reference is nearly useless without seeing it.
- *
- * The fix: fetch the page's own social-preview metadata (the same og:image /
- * og:title every modern site already sets for link unfurls on Twitter,
- * iMessage, Slack, etc.) and use that as the thumbnail. This is a real
- * screenshot-quality preview for the vast majority of sites, with zero
- * scraping fragility — we're reading tags the site published for exactly
- * this purpose.
- */
+// For an ordinary web page, read the social-preview tags it already
+// publishes for link unfurls (og:image, og:title) and use them as the card's
+// thumbnail and title. Goes through safeFetch, so a caller-supplied URL can
+// never be used to reach the server's own network.
+import { safeFetch } from '../lib/safeFetch.js';
 
-const FETCH_TIMEOUT_MS = 5000;
-const MAX_HTML_BYTES = 500_000; // enough for <head>; avoids downloading huge pages just for two meta tags
+const MAX_HTML_BYTES = 600_000;
 
-// SSRF guard: this endpoint now makes an outbound request to a URL the
-// CALLER supplies (via the capture request). Without this check, someone
-// could get the server to hit its own internal network (a local admin
-// panel, a cloud metadata endpoint, another service on localhost) and read
-// back whatever it returns as a "thumbnail". Reject anything that isn't a
-// plausible public hostname before ever fetching it.
-const PRIVATE_HOST_PATTERNS = [
-  /^localhost$/i,
-  /^127\./,
-  /^0\.0\.0\.0$/,
-  /^10\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^192\.168\./,
-  /^169\.254\./, // link-local, includes cloud metadata endpoints (169.254.169.254)
-  /^::1$/,
-  /^\[?::1\]?$/,
-  /\.local$/i,
-];
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'", '#x27': "'" };
 
-function isPrivateHost(hostname) {
-  return PRIVATE_HOST_PATTERNS.some((pattern) => pattern.test(hostname));
+function decodeEntities(text) {
+  return text
+    .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (whole, code) => {
+      const key = code.toLowerCase();
+      if (ENTITIES[key] !== undefined) return ENTITIES[key];
+      if (key.startsWith('#x')) return safeFromCodePoint(parseInt(key.slice(2), 16), whole);
+      if (key.startsWith('#')) return safeFromCodePoint(parseInt(key.slice(1), 10), whole);
+      return whole;
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function extractMetaContent(html, property) {
-  // Matches both attribute orders: <meta property="og:image" content="..."> and
-  // <meta content="..." property="og:image">. Case-insensitive, single or double quotes.
+function safeFromCodePoint(n, fallback) {
+  return Number.isFinite(n) && n > 31 && n <= 0x10ffff ? String.fromCodePoint(n) : fallback;
+}
+
+function extractMeta(html, key) {
+  // Both attribute orders, property= or name=, single or double quotes.
   const patterns = [
-    new RegExp(`<meta[^>]+property=["']${property}["'][^>]+content=["']([^"']+)["']`, 'i'),
-    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${property}["']`, 'i'),
+    new RegExp(`<meta[^>]+(?:property|name)=["']${key}["'][^>]*?content=["']([^"']+)["']`, 'i'),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]*?(?:property|name)=["']${key}["']`, 'i'),
   ];
   for (const pattern of patterns) {
     const match = html.match(pattern);
@@ -53,83 +39,36 @@ function extractMetaContent(html, property) {
 }
 
 function extractTitleTag(html) {
-  const match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-  return match ? match[1].trim() : null;
+  const match = html.match(/<title[^>]*>([^<]{1,500})<\/title>/i);
+  return match ? match[1] : null;
 }
 
 /**
- * Fetches a page and pulls og:image / og:title (falling back to <title>).
- * Never throws — a preview is a nice-to-have, not something that should be
- * able to fail a capture. Returns { ogImage: string|null, ogTitle: string|null }.
+ * Never throws. Returns { ogImage, ogTitle } with nulls when nothing usable
+ * was found; the capture succeeds either way.
  */
 export async function fetchPagePreview(pageUrl) {
-  let parsed;
-  try {
-    parsed = new URL(pageUrl);
-  } catch {
-    return { ogImage: null, ogTitle: null };
-  }
+  const empty = { ogImage: null, ogTitle: null };
+  const res = await safeFetch(pageUrl, {
+    maxBytes: MAX_HTML_BYTES,
+    accept: 'text/html,application/xhtml+xml',
+    // The tags live in <head>; stop reading as soon as it has closed.
+    stopWhen: (chunks) => /<\/head>/i.test(chunks[chunks.length - 1].toString('latin1')),
+  });
+  if (!res || !res.ok || !res.contentType.includes('html')) return empty;
 
-  if (!['http:', 'https:'].includes(parsed.protocol) || isPrivateHost(parsed.hostname)) {
-    return { ogImage: null, ogTitle: null };
-  }
+  const html = res.body.toString('utf8');
+  let ogImage = extractMeta(html, 'og:image') || extractMeta(html, 'og:image:url') || extractMeta(html, 'twitter:image');
+  const rawTitle = extractMeta(html, 'og:title') || extractTitleTag(html);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-  try {
-    const res = await fetch(parsed.toString(), {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: {
-        // Some sites serve a stripped-down (or blocked) response to an
-        // unrecognized bot UA — a normal browser UA gets the real page.
-        'User-Agent':
-          'Mozilla/5.0 (compatible; Moodloom/0.1; +https://github.com/Stedan1234/moodloom)',
-      },
-    });
-
-    if (!res.ok || !res.body) return { ogImage: null, ogTitle: null };
-
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('text/html')) return { ogImage: null, ogTitle: null };
-
-    // Read only up to MAX_HTML_BYTES — the og tags are always in <head>, so
-    // there's no reason to download an entire large page for this.
-    const reader = res.body.getReader();
-    let received = 0;
-    let html = '';
-    const decoder = new TextDecoder();
-    while (received < MAX_HTML_BYTES) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      received += value.length;
-      html += decoder.decode(value, { stream: true });
-      if (/<\/head>/i.test(html)) break; // no need to read further once we have <head>
+  if (ogImage) {
+    try {
+      const resolved = new URL(decodeEntities(ogImage), res.finalUrl);
+      ogImage = ['http:', 'https:'].includes(resolved.protocol) ? resolved.toString() : null;
+    } catch {
+      ogImage = null;
     }
-    reader.cancel().catch(() => {});
-
-    let ogImage = extractMetaContent(html, 'og:image') || extractMetaContent(html, 'twitter:image');
-    let ogTitle = extractMetaContent(html, 'og:title') || extractTitleTag(html);
-
-    // og:image is sometimes a relative path — resolve it against the page URL.
-    if (ogImage) {
-      try {
-        ogImage = new URL(ogImage, parsed).toString();
-      } catch {
-        ogImage = null;
-      }
-    }
-
-    return { ogImage: ogImage || null, ogTitle: ogTitle || null };
-  } catch {
-    // Timeout, network error, blocked by the target site, malformed HTML —
-    // all treated the same way: no preview, capture still succeeds.
-    return { ogImage: null, ogTitle: null };
-  } finally {
-    clearTimeout(timeout);
   }
+  const ogTitle = rawTitle ? decodeEntities(rawTitle).slice(0, 300) : null;
+  return { ogImage: ogImage || null, ogTitle: ogTitle || null };
 }
-
-// Exported for testing the SSRF guard directly, without a real network call.
-export { isPrivateHost };

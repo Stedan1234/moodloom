@@ -1,49 +1,49 @@
 import jwt from 'jsonwebtoken';
-import dotenv from 'dotenv';
+import { config } from '../config.js';
+import { pool } from '../db/pool.js';
 
-dotenv.config();
+// Tokens are HS256 JWTs carrying the user id and the account's
+// token_version at signing time. The algorithm is pinned on verify so a
+// token can't downgrade it, and the version is compared against the
+// database on every request so "sign out everywhere", a password change or
+// a password reset really does kill tokens that are already out there.
+export function signToken(user) {
+  return jwt.sign({ userId: user.id, tv: user.token_version ?? 0 }, config.jwtSecret, {
+    expiresIn: config.tokenTtl,
+    algorithm: 'HS256',
+  });
+}
 
-const JWT_SECRET = process.env.JWT_SECRET;
-const PLACEHOLDER_SECRET = 'replace-with-a-long-random-string';
+async function userFromRequest(req) {
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith('Bearer ')) return { error: 'Missing or malformed Authorization header' };
+  let payload;
+  try {
+    payload = jwt.verify(header.slice('Bearer '.length), config.jwtSecret, { algorithms: ['HS256'] });
+  } catch {
+    return { error: 'Invalid or expired token' };
+  }
+  if (!Number.isInteger(payload.userId)) return { error: 'Invalid or expired token' };
 
-// Every token this API issues is only as safe as this secret. Fail loudly
-// and immediately (not on the first request) rather than silently signing
-// tokens with nothing, or with the literal placeholder from .env.example —
-// both would let anyone forge a valid token for any user id.
-if (!JWT_SECRET || JWT_SECRET.trim().length === 0) {
-  throw new Error(
-    'JWT_SECRET is not set. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))" and put it in backend/.env'
+  const result = await pool.query(
+    'SELECT id, email, plan, token_version, display_name FROM users WHERE id = $1',
+    [payload.userId]
   );
-}
-if (JWT_SECRET === PLACEHOLDER_SECRET) {
-  throw new Error(
-    'JWT_SECRET is still set to the .env.example placeholder value. Generate a real one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"'
-  );
-}
-if (process.env.NODE_ENV === 'production' && JWT_SECRET.length < 32) {
-  throw new Error('JWT_SECRET is too short for production use (need 32+ characters of real entropy).');
-}
-
-export function signToken(userId) {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '90d' });
+  const user = result.rows[0];
+  // Tokens issued before versions existed carry no `tv`; they stay valid
+  // until the account's version first moves off zero.
+  if (!user || user.token_version !== (payload.tv ?? 0)) return { error: 'Invalid or expired token' };
+  return { user };
 }
 
 /**
- * Requires a valid Bearer token. Attaches req.userId.
- * Every route that touches projects/board_items/workspace_notes must use this,
- * so one user can never read or write another user's data.
+ * Requires a valid Bearer token. Attaches req.userId and req.user.
+ * Every route that touches someone's data goes through this first.
  */
-export function requireAuth(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or malformed Authorization header' });
-  }
-  const token = header.slice('Bearer '.length);
-  try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.userId = payload.userId;
-    next();
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
+export async function requireAuth(req, res, next) {
+  const { user, error } = await userFromRequest(req);
+  if (!user) return res.status(401).json({ error });
+  req.userId = user.id;
+  req.user = user;
+  next();
 }

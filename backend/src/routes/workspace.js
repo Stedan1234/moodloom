@@ -1,51 +1,36 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { requireAuth } from '../middleware/auth.js';
+import { projectAccess, touchProject } from '../middleware/project.js';
+import { parse, z } from '../lib/validate.js';
 
-// mergeParams so we can read :projectId (mounted at /projects/:projectId/workspace)
+// mergeParams: mounted at /projects/:projectId/workspace
 export const workspaceRouter = Router({ mergeParams: true });
 workspaceRouter.use(requireAuth);
 
-async function assertProjectOwnership(req, res) {
-  const result = await pool.query('SELECT id FROM projects WHERE id = $1 AND user_id = $2', [
-    req.params.projectId,
-    req.userId,
-  ]);
-  if (result.rows.length === 0) {
-    res.status(404).json({ error: 'Project not found' });
-    return false;
-  }
-  return true;
-}
+const MAX_NOTES_CHARS = 800_000;
 
-// GET /projects/:projectId/workspace — the v1 minimal workspace: plain text notes
-// living next to the board, per mvp-scope.md (deliberately NOT a design canvas yet)
-workspaceRouter.get('/', async (req, res) => {
-  if (!(await assertProjectOwnership(req, res))) return;
-
-  const result = await pool.query(
-    'SELECT content, updated_at FROM workspace_notes WHERE project_id = $1',
-    [req.params.projectId]
-  );
-  // No row yet just means an empty workspace — that's a normal, valid state.
+// GET — the project's notes (HTML from the editor; plain text for notes
+// written before rich text existed). No row yet is an empty workspace.
+workspaceRouter.get('/', projectAccess('viewer'), async (req, res) => {
+  const result = await pool.query('SELECT content, updated_at FROM workspace_notes WHERE project_id = $1', [req.project.id]);
   res.json(result.rows[0] || { content: '', updated_at: null });
 });
 
-// PUT /projects/:projectId/workspace — upsert the notes content
-workspaceRouter.put('/', async (req, res) => {
-  if (!(await assertProjectOwnership(req, res))) return;
-
-  const { content } = req.body;
-  if (typeof content !== 'string') {
-    return res.status(400).json({ error: 'content (string) is required' });
-  }
-
+// PUT — save the notes. The HTML is stored as written and is only ever
+// rendered back through the editor's own schema (which drops scripts and
+// unknown markup), in the app and on shared pages alike.
+workspaceRouter.put('/', projectAccess('editor'), async (req, res) => {
+  const { content } = parse(
+    z.object({ content: z.string({ error: 'content (string) is required' }).max(MAX_NOTES_CHARS, 'These notes are too long to save') }),
+    req.body
+  );
   const result = await pool.query(
-    `INSERT INTO workspace_notes (project_id, content, updated_at)
-     VALUES ($1, $2, now())
+    `INSERT INTO workspace_notes (project_id, content, updated_at) VALUES ($1, $2, now())
      ON CONFLICT (project_id) DO UPDATE SET content = $2, updated_at = now()
      RETURNING content, updated_at`,
-    [req.params.projectId, content]
+    [req.project.id, content]
   );
+  await touchProject(req.project.id);
   res.json(result.rows[0]);
 });

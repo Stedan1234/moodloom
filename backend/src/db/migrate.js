@@ -1,26 +1,21 @@
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { readFileSync, statSync } from 'fs';
+import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 import { pool } from './pool.js';
+import { config } from '../config.js';
 import { STARTER_CATEGORY_NAMES } from './starterCategories.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// The unique index on (project_id, source_url) — added for the duplicate-
-// capture guard — can only be created if the data is actually already
-// unique. On a database where the SAME url got captured twice into the
-// same project before that guard existed (e.g. during earlier manual
-// testing, clicking "Add to board" twice), the index creation in schema.sql
-// fails outright with a duplicate-key error, and the whole migration aborts
-// before anything after it (including the categories feature) ever runs.
-// This runs first and keeps the oldest row per duplicate (project_id,
-// source_url) pair, deleting the rest — so the index can always be created.
-// Safe to run every time: it's a no-op once there are no duplicates left.
-async function dedupeBoardItemsBeforeUniqueIndex() {
-  const tableExists = await pool.query(`
-    SELECT 1 FROM information_schema.tables WHERE table_name = 'board_items'
-  `);
-  if (tableExists.rows.length === 0) return; // fresh install — nothing to clean up yet
+// The unique index on (project_id, source_url) can only be created if the
+// data is already unique. A database that captured the same URL twice before
+// the duplicate guard existed would fail the whole migration, so remove
+// those first (keeping the oldest). A no-op once there are none.
+async function dedupeBoardItemsBeforeUniqueIndex(log) {
+  const tableExists = await pool.query(
+    "SELECT 1 FROM information_schema.tables WHERE table_name = 'board_items' AND table_schema = current_schema()"
+  );
+  if (tableExists.rows.length === 0) return;
 
   const result = await pool.query(`
     DELETE FROM board_items a
@@ -30,17 +25,12 @@ async function dedupeBoardItemsBeforeUniqueIndex() {
       AND a.source_url = b.source_url
   `);
   if (result.rowCount > 0) {
-    console.log(
-      `Removed ${result.rowCount} duplicate board item(s) (same URL captured twice into the same project before the duplicate-capture guard existed) so the unique index could be created.`
-    );
+    log(`Removed ${result.rowCount} duplicate board item(s) so the unique index could be created.`);
   }
 }
 
-// New projects get the starter set at creation time (routes/projects.js).
-// Projects that already existed before categories were introduced never got
-// that — this backfills any project with zero categories so it isn't stuck
-// permanently uncategorized just for having been created earlier.
-async function backfillStarterCategories() {
+// Projects created before categories existed never got the starter set.
+async function backfillStarterCategories(log) {
   const projects = await pool.query(`
     SELECT p.id FROM projects p
     LEFT JOIN categories c ON c.project_id = p.id
@@ -56,22 +46,70 @@ async function backfillStarterCategories() {
       ]);
     }
   }
-  if (projects.rows.length > 0) {
-    console.log(`Seeded starter categories for ${projects.rows.length} existing project(s).`);
+  if (projects.rows.length > 0) log(`Seeded starter categories for ${projects.rows.length} existing project(s).`);
+}
+
+// Emails are compared case-insensitively from now on by always storing them
+// lowercase. Lowercase any older mixed-case rows, skipping the (unlikely)
+// case where that would collide with another account.
+async function normalizeEmails(log) {
+  const result = await pool.query(`
+    UPDATE users u SET email = lower(u.email)
+    WHERE u.email IS NOT NULL AND u.email <> lower(u.email)
+      AND NOT EXISTS (SELECT 1 FROM users o WHERE o.id <> u.id AND o.email = lower(u.email))
+  `);
+  if (result.rowCount > 0) log(`Lowercased ${result.rowCount} stored email address(es).`);
+}
+
+// v1 stored an upload only as an absolute URL (PUBLIC_BASE_URL/uploads/<file>).
+// Uploads are now identified by storage_key, with the URL derived on the way
+// out. Fill storage_key (and size) for those older rows. Only URLs under OUR
+// uploads path are touched: plenty of ordinary captured references contain
+// "/uploads/" too (every WordPress site), and those must stay remote.
+async function backfillStorageKeys(log) {
+  const rows = await pool.query(
+    `SELECT id, source_url FROM board_items
+     WHERE storage_key IS NULL AND source_url ~ '^https?://[^/]+/uploads/[A-Za-z0-9-]+\\.(png|jpg|jpeg|gif|webp)$'`
+  );
+  let filled = 0;
+  for (const row of rows.rows) {
+    const key = row.source_url.slice(row.source_url.lastIndexOf('/') + 1);
+    let size = null;
+    try {
+      size = statSync(path.join(config.uploadsDir, key)).size;
+    } catch {
+      continue; // not a file we hold, so it is someone else's URL after all
+    }
+    const ext = key.split('.').pop();
+    const mime = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+    await pool.query(
+      'UPDATE board_items SET storage_key = $1, file_size = $2, mime_type = $3 WHERE id = $4',
+      [key, size, mime, row.id]
+    );
+    filled++;
   }
+  if (filled > 0) log(`Linked ${filled} earlier upload(s) to their stored files.`);
 }
 
-async function migrate() {
+export async function runMigrations({ log = console.log } = {}) {
   const schema = readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-  console.log('Running migration...');
-  await dedupeBoardItemsBeforeUniqueIndex();
+  await dedupeBoardItemsBeforeUniqueIndex(log);
   await pool.query(schema);
-  await backfillStarterCategories();
-  console.log('Migration complete.');
-  await pool.end();
+  await backfillStarterCategories(log);
+  await normalizeEmails(log);
+  await backfillStorageKeys(log);
 }
 
-migrate().catch((err) => {
-  console.error('Migration failed:', err);
-  process.exit(1);
-});
+// Run directly: `npm run migrate`.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  console.log('Running migration...');
+  runMigrations()
+    .then(async () => {
+      console.log('Migration complete.');
+      await pool.end();
+    })
+    .catch((err) => {
+      console.error('Migration failed:', err);
+      process.exit(1);
+    });
+}

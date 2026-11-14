@@ -1,25 +1,27 @@
-// Sends transactional email. If SMTP_HOST isn't configured (local dev), the
+// Sends transactional email. With no SMTP_HOST configured (local dev) the
 // message is printed to the backend console instead, so the reset flow is
-// fully usable on a laptop with no mail server: copy the link from the log.
+// usable on a laptop with no mail server: copy the link from the log.
+import { config } from '../config.js';
+
+export const outbox = []; // last few messages, for the automated tests
+
 export async function sendMail({ to, subject, text }) {
-  if (!process.env.SMTP_HOST) {
-    console.log(`\n[mailer] SMTP not configured — would send email:\n  To: ${to}\n  Subject: ${subject}\n\n${text}\n`);
+  if (config.isTest) {
+    outbox.push({ to, subject, text });
+    if (outbox.length > 20) outbox.shift();
+    return { delivered: false };
+  }
+  if (!config.smtp.host) {
+    console.log(`\n[mailer] SMTP not configured. Would send:\n  To: ${to}\n  Subject: ${subject}\n\n${text}\n`);
     return { delivered: false };
   }
   const { default: nodemailer } = await import('nodemailer');
   const transport = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: process.env.SMTP_USER
-      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-      : undefined,
+    host: config.smtp.host,
+    port: config.smtp.port,
+    secure: config.smtp.secure,
+    auth: config.smtp.user ? { user: config.smtp.user, pass: config.smtp.pass } : undefined,
   });
-  await transport.sendMail({
-    from: process.env.MAIL_FROM || 'Moodloom <no-reply@localhost>',
-    to,
-    subject,
-    text,
-  });
+  await transport.sendMail({ from: config.smtp.from, to, subject, text });
   return { delivered: true };
 }
