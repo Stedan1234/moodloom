@@ -47,3 +47,8 @@ MVP: projects, fixed-grid then masonry board, browser extension with pairing cod
 ## 3.0.3 — 14 November 2026
 
 - Sketch: frames, placed references, rectangles and ellipses resize from their corners with the select tool; arrows from either end. References keep their proportions. A newly placed frame is selected straight away.
+
+## 3.0.4 — 14 November 2026
+
+- Sketch: frames, rectangles and ellipses take a solid fill (Line / Fill switch above the colours; the first colours come from the board's own palette). Clicking a colour also recolours whatever is selected.
+- Sketch: a frame holds what sits inside it. Move the frame and its contents move with it; drag something out and it's free again.

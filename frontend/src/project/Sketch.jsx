@@ -16,6 +16,8 @@ import { itemLabel } from '../lib/util'
 //   { id, type: 'image', x, y, w, h, itemId }
 //   { id, type: 'rect' | 'ellipse' | 'arrow', x, y, w, h, color, size }   (w/h may be negative)
 //   { id, type: 'frame', x, y, w, h, name }   an artboard to lay a screen out in
+// Frames, rectangles and ellipses may also carry `fill` (a hex colour).
+// A frame holds what sits inside it: move the frame and its contents come too.
 
 const INK = '#16201d'
 const BASE_COLORS = [INK, '#c4472e', '#2f5fa8', '#5e8b3a', '#d9a300', '#b5578a']
@@ -101,7 +103,7 @@ function drawElement(ctx, el, images) {
       ctx.fillRect(el.x, el.y, el.w, el.h)
     }
   } else if (el.type === 'frame') {
-    ctx.fillStyle = '#ffffff'
+    ctx.fillStyle = el.fill || '#ffffff'
     ctx.fillRect(el.x, el.y, el.w, el.h)
     ctx.strokeStyle = '#c9cec7'
     ctx.lineWidth = 1.5
@@ -128,6 +130,10 @@ function drawElement(ctx, el, images) {
       ctx.moveTo(x2 - head * Math.cos(angle - 0.45), y2 - head * Math.sin(angle - 0.45))
       ctx.lineTo(x2, y2)
       ctx.lineTo(x2 - head * Math.cos(angle + 0.45), y2 - head * Math.sin(angle + 0.45))
+    }
+    if (el.fill && el.type !== 'arrow') {
+      ctx.fillStyle = el.fill
+      ctx.fill()
     }
     ctx.stroke()
   }
@@ -167,6 +173,19 @@ function resized(el, corner, px, py) {
   const round = el.type === 'frame' ? Math.round : (v) => v
   return { ...el, x: round(px < ax ? ax - w : ax), y: round(py < ay ? ay - h : ay), w: round(w), h: round(h) }
 }
+// What a frame is holding: everything whose centre lies inside it (smaller
+// frames included), so a frame and its contents move as one without a
+// separate "group" step.
+function heldBy(frame, list, ctx) {
+  return list.filter((el) => {
+    if (el.id === frame.id) return false
+    if (el.type === 'frame' && el.w * el.h >= frame.w * frame.h) return false
+    const b = el.type === 'frame' ? { x: el.x, y: el.y, w: el.w, h: el.h } : boundsOf(el, ctx)
+    const cx = b.x + b.w / 2
+    const cy = b.y + b.h / 2
+    return cx >= frame.x && cx <= frame.x + frame.w && cy >= frame.y && cy <= frame.y + frame.h
+  })
+}
 function moveBy(el, dx, dy) {
   if (el.type === 'stroke') return { ...el, points: el.points.map(([x, y, p]) => [x + dx, y + dy, p]) }
   return { ...el, x: el.x + dx, y: el.y + dy }
@@ -205,6 +224,8 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
   const [picking, setPicking] = useState(false)
   const [pinning, setPinning] = useState(false)
   const [framePreset, setFramePreset] = useState(0)
+  const [fill, setFill] = useState(null)
+  const [paintMode, setPaintMode] = useState('line') // which of the two a colour click sets
 
   const render = useCallback(() => {
     cancelAnimationFrame(raf.current)
@@ -404,7 +425,7 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       const rect = wrapRef.current.getBoundingClientRect()
       pendingText.current = { px, py, left: e.clientX - rect.left, top: e.clientY - rect.top, value: '' }
     } else if (SHAPES.includes(tool)) {
-      drawing.current = { id: uid(), type: tool, x: px, y: py, w: 0, h: 0, color, size }
+      drawing.current = { id: uid(), type: tool, x: px, y: py, w: 0, h: 0, color, size, ...(fill && tool !== 'arrow' ? { fill } : {}) }
     } else if (tool === 'frame') {
       const [name, w, h] = FRAMES[framePreset]
       const frame = { id: uid(), type: 'frame', name, x: Math.round(px - w / 2), y: Math.round(py - h / 2), w, h }
@@ -432,7 +453,7 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
           return px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h
         })
       selected.current = hit?.id || null
-      moving.current = hit ? { id: hit.id, sx: px, sy: py, original: hit, moved: false } : null
+      moving.current = hit ? { id: hit.id, sx: px, sy: py, original: hit, moved: false, held: hit.type === 'frame' ? heldBy(hit, elements.current, ctx) : [] } : null
       bump((n) => n + 1)
       render()
     }
@@ -458,7 +479,9 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       const m = moving.current
       m.moved = true
       const next = m.corner ? resized(m.original, m.corner, px, py) : moveBy(m.original, px - m.sx, py - m.sy)
-      elements.current = elements.current.map((el) => (el.id === m.id ? next : el))
+      // a frame takes what it holds with it
+      const carried = m.corner ? new Map() : new Map((m.held || []).map((el) => [el.id, moveBy(el, px - m.sx, py - m.sy)]))
+      elements.current = elements.current.map((el) => (el.id === m.id ? next : carried.get(el.id) || el))
       return render()
     }
     if (drawing.current && drawing.current.type !== 'stroke') {
@@ -582,6 +605,27 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [Boolean(textAt)])
+
+  // A colour click sets the pen (or fill) for what's drawn next, and also
+  // recolours whatever is selected.
+  function pickColour(c) {
+    if (paintMode === 'fill') setFill(c)
+    else setColor(c)
+    const el = selected.current && elements.current.find((e) => e.id === selected.current)
+    if (!el) return
+    let next = null
+    if (paintMode === 'fill' && ['frame', 'rect', 'ellipse'].includes(el.type)) {
+      next = { ...el }
+      if (c) next.fill = c
+      else delete next.fill
+    } else if (paintMode === 'line' && c && el.type !== 'frame' && el.type !== 'image') {
+      next = { ...el, color: c }
+    }
+    if (next) {
+      elements.current = elements.current.map((e) => (e.id === el.id ? next : e))
+      changed()
+    }
+  }
 
   function commitText() {
     // Ignore a blur in the instant after opening; that is the opening click settling.
@@ -712,8 +756,17 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
               </div>
             )}
             <div className="sheet p-1.5 grid grid-cols-2 justify-items-center gap-1.5 pointer-events-auto" role="group" aria-label="Pen colour and size">
+              <div className="col-span-2 flex w-full rounded-md overflow-hidden border border-line text-[11px]" role="group" aria-label="What a colour sets">
+                <button className={`flex-1 py-1 ${paintMode === 'line' ? 'bg-spruce text-paper' : ''}`} aria-pressed={paintMode === 'line'} onClick={() => setPaintMode('line')} title="Colours set the line or text colour">Line</button>
+                <button className={`flex-1 py-1 ${paintMode === 'fill' ? 'bg-spruce text-paper' : ''}`} aria-pressed={paintMode === 'fill'} onClick={() => setPaintMode('fill')} title="Colours fill frames, rectangles and ellipses">Fill</button>
+              </div>
+              {paintMode === 'fill' && (
+                <button title="No fill" aria-label="No fill" aria-pressed={fill === null} onClick={() => pickColour(null)} className={`w-6 h-6 rounded-full border border-ink/30 bg-paper relative overflow-hidden ${fill === null ? 'ring-2 ring-offset-2 ring-offset-paper ring-ink' : ''}`}>
+                  <span className="absolute left-1/2 top-0 h-full w-0.5 bg-madder rotate-45" />
+                </button>
+              )}
               {colors.map((c) => (
-                <button key={c} title={c.toUpperCase()} aria-label={`Colour ${c}`} aria-pressed={color === c} onClick={() => setColor(c)} className={`w-6 h-6 rounded-full border border-ink/15 ${color === c ? 'ring-2 ring-offset-2 ring-offset-paper ring-ink' : ''}`} style={{ background: c }} />
+                <button key={c} title={c.toUpperCase()} aria-label={`Colour ${c}`} aria-pressed={color === c} onClick={() => pickColour(c)} className={`w-6 h-6 rounded-full border border-ink/15 ${(paintMode === 'fill' ? fill : color) === c ? 'ring-2 ring-offset-2 ring-offset-paper ring-ink' : ''}`} style={{ background: c }} />
               ))}
               {SIZES.map((s) => (
                 <button key={s} title={`Pen width ${s}`} aria-label={`Pen width ${s}`} aria-pressed={size === s} onClick={() => setSize(s)} className={`w-7 h-7 rounded-md grid place-items-center ${size === s ? 'bg-ink/10' : 'hover:bg-ink/7'}`}>
