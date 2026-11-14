@@ -12,7 +12,7 @@
     "test": "node --test --test-concurrency=1 --test-reporter=spec \"test/*.test.js\"",
     "set-plan": "node src/scripts/setPlan.js",
     "ai:eval": "node src/scripts/evalAll.js",
-    "ai:check-clip": "node src/scripts/checkClip.js"
+    "demo:seed": "node src/scripts/seedDemo.js"
   },
   "dependencies": {
     "archiver": "^8.0.0",

@@ -1,45 +1,74 @@
-import { useEffect, useState } from 'react';
-import ProjectList from './components/ProjectList';
-import ProjectView from './components/ProjectView';
-import ResetPassword from './components/ResetPassword';
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { api } from './api'
+import { match, navigate, useLocation } from './router'
+import { Spinner, ToastProvider } from './ui'
+import Welcome from './pages/Welcome'
+import Home from './pages/Home'
 
-function getProjectIdFromUrl() {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('project') || null;
+// Everything past the first two screens loads when it's needed.
+const Project = lazy(() => import('./pages/Project'))
+const Account = lazy(() => import('./pages/Account'))
+const Shared = lazy(() => import('./pages/Shared'))
+const Invite = lazy(() => import('./pages/Invite'))
+const Reset = lazy(() => import('./pages/Reset'))
+const ShareTarget = lazy(() => import('./pages/ShareTarget'))
+
+function Screen({ path, query }) {
+  // Bumped when the session changes so screens re-read who is signed in.
+  const [sessionKey, setSessionKey] = useState(0)
+  useEffect(() => {
+    const onSignedOut = () => {
+      setSessionKey((k) => k + 1)
+      navigate('/', { replace: true })
+    }
+    window.addEventListener('moodloom:signed-out', onSignedOut)
+    return () => window.removeEventListener('moodloom:signed-out', onSignedOut)
+  }, [])
+  const refresh = () => setSessionKey((k) => k + 1)
+
+  let m
+  if ((m = match('/s/:token', path))) return <Shared token={m.token} />
+  if ((m = match('/invite/:token', path))) return <Invite token={m.token} onSession={refresh} />
+  if (match('/reset', path)) return <Reset token={query.get('token') || ''} onSession={refresh} />
+  // Links emailed before the app had real paths.
+  if (path === '/' && query.get('reset_token')) return <Reset token={query.get('reset_token')} onSession={refresh} />
+
+  if (!api.hasSession()) {
+    // Deep links (a project, a share from the phone) land on the welcome
+    // screen first; after starting or logging in they carry on to where
+    // they were going.
+    return <Welcome key={sessionKey} onSession={refresh} next={path === '/' ? null : path + window.location.search} />
+  }
+  if ((m = match('/p/:id/:tab?', path))) return <Project key={`${m.id}-${sessionKey}`} projectId={m.id} tab={m.tab || 'board'} openItemId={query.get('item')} />
+  if (match('/account', path)) return <Account key={sessionKey} onSession={refresh} />
+  if (match('/share-target', path)) return <ShareTarget query={query} />
+  if (path === '/') return <Home key={sessionKey} />
+  return (
+    <div className="min-h-screen grid place-items-center p-8 text-center">
+      <div>
+        <h1 className="text-3xl mb-2">Nothing at this address</h1>
+        <p className="text-mute mb-5">The link may be mistyped, or the page has moved.</p>
+        <button className="btn btn-primary" onClick={() => navigate('/')}>
+          Go to your projects
+        </button>
+      </div>
+    </div>
+  )
 }
 
-// Two views, reflected in the URL (?project=<id>) rather than kept only in
-// React state — a reload, a bookmark, or sharing a link should land back on
-// the same project, not drop to the project list. No router dependency
-// needed at this scope; the History API alone covers it.
 export default function App() {
-  const [openProjectId, setOpenProjectId] = useState(getProjectIdFromUrl);
-
-  useEffect(() => {
-    function handlePopState() {
-      setOpenProjectId(getProjectIdFromUrl());
-    }
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
-
-  function openProject(id) {
-    window.history.pushState({}, '', `?project=${id}`);
-    setOpenProjectId(id);
-  }
-
-  function backToList() {
-    window.history.pushState({}, '', window.location.pathname);
-    setOpenProjectId(null);
-  }
-
-  const resetToken = new URLSearchParams(window.location.search).get('reset_token');
-  if (resetToken) {
-    return <ResetPassword token={resetToken} />;
-  }
-
-  if (openProjectId) {
-    return <ProjectView projectId={openProjectId} onBack={backToList} />;
-  }
-  return <ProjectList onOpenProject={openProject} />;
+  const { path, query } = useLocation()
+  return (
+    <ToastProvider>
+      <Suspense
+        fallback={
+          <div className="min-h-screen grid place-items-center">
+            <Spinner />
+          </div>
+        }
+      >
+        <Screen path={path} query={query} />
+      </Suspense>
+    </ToastProvider>
+  )
 }

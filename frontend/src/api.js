@@ -1,169 +1,207 @@
-// API client for the web app. Same auth-token pattern as extension/api.js
-// (anonymous-by-default, token persisted client-side) but using localStorage
-// since this runs in an ordinary tab, not a Chrome extension.
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001';
-const TOKEN_KEY = 'moodloom_token';
+// API client. One origin: in development Vite proxies /api and /uploads to
+// the backend, in production the backend serves this app itself.
+const API = (import.meta.env.VITE_API_BASE || '') + '/api'
+const TOKEN_KEY = 'moodloom_token'
 
-async function getOrCreateToken() {
-  const existing = localStorage.getItem(TOKEN_KEY);
-  if (existing) return existing;
-
-  const res = await fetch(`${API_BASE}/auth/anonymous`, { method: 'POST' });
-  if (!res.ok) throw new Error('Could not create a session');
-  const data = await res.json();
-  localStorage.setItem(TOKEN_KEY, data.token);
-  return data.token;
+export class ApiError extends Error {
+  constructor(message, status, code) {
+    super(message)
+    this.status = status
+    this.code = code
+  }
 }
 
-async function apiFetch(path, options = {}) {
-  const token = await getOrCreateToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-  });
-  if (res.status === 401) {
-    // The stored token no longer verifies (e.g. a JWT_SECRET rotation, or a
-    // stale value from an old install). Previously this just showed "Invalid
-    // or expired token" forever with no way forward. Clearing it here means
-    // the NEXT call gets a fresh anonymous token automatically — the same
-    // self-healing behavior the extension already had.
-    localStorage.removeItem(TOKEN_KEY);
-    throw new Error('Your session needed to be refreshed — please try that again.');
+export const session = {
+  get token() {
+    try {
+      return localStorage.getItem(TOKEN_KEY)
+    } catch {
+      return null
+    }
+  },
+  set(token) {
+    try {
+      localStorage.setItem(TOKEN_KEY, token)
+    } catch {
+      /* private mode: the session lasts for this page only */
+    }
+    memoryToken = token
+  },
+  clear() {
+    try {
+      localStorage.removeItem(TOKEN_KEY)
+    } catch {
+      /* nothing to clear */
+    }
+    memoryToken = null
+  },
+}
+let memoryToken = null
+const currentToken = () => session.token || memoryToken
+
+let creating = null
+// Accounts are anonymous until someone chooses to save theirs, so the first
+// call that needs one makes it. Shared promise: ten parallel calls on first
+// load must not create ten accounts.
+async function ensureToken() {
+  const existing = currentToken()
+  if (existing) return existing
+  if (!creating) {
+    creating = fetch(`${API}/auth/anonymous`, { method: 'POST' })
+      .then(async (res) => {
+        if (!res.ok) throw new ApiError('Moodloom could not start a session. Is the server running?', res.status)
+        const data = await res.json()
+        session.set(data.token)
+        return data.token
+      })
+      .finally(() => {
+        creating = null
+      })
   }
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${res.status})`);
-  }
-  if (res.status === 204) return null;
-  return res.json();
+  return creating
 }
 
-async function rawFetch(path, options = {}) {
-  // For calls that must NOT attach (or create) the current token, namely
-  // /auth/login — logging in should never auto-provision an anonymous
-  // account first, it should go straight to the real account.
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${res.status})`);
+async function readError(res) {
+  const body = await res.json().catch(() => ({}))
+  return new ApiError(body.error || `Request failed (${res.status})`, res.status, body.code)
+}
+
+async function request(path, { method = 'GET', body, auth = true, form } = {}) {
+  const headers = {}
+  if (auth) headers.Authorization = `Bearer ${await ensureToken()}`
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  let res
+  try {
+    res = await fetch(`${API}${path}`, { method, headers, body: form || (body !== undefined ? JSON.stringify(body) : undefined) })
+  } catch {
+    throw new ApiError('Can’t reach Moodloom. Check your connection, or that the server is running.', 0, 'NETWORK')
   }
-  return res.json();
+  if (res.status === 401 && auth) {
+    // The stored token no longer verifies (signed out everywhere, password
+    // changed elsewhere). Drop it and tell the app, which decides what to show.
+    session.clear()
+    window.dispatchEvent(new Event('moodloom:signed-out'))
+    throw new ApiError('You’ve been signed out. Log in again to carry on.', 401, 'SIGNED_OUT')
+  }
+  if (!res.ok) throw await readError(res)
+  if (res.status === 204) return null
+  return res.json()
+}
+
+const get = (path) => request(path)
+const post = (path, body) => request(path, { method: 'POST', body: body ?? {} })
+const patch = (path, body) => request(path, { method: 'PATCH', body })
+const put = (path, body) => request(path, { method: 'PUT', body })
+const del = (path, body) => request(path, { method: 'DELETE', body })
+
+// Downloads go through fetch (the token lives in a header, not a cookie),
+// then are handed to the browser as a file.
+async function download(path, fallbackName) {
+  const res = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${await ensureToken()}` } })
+  if (!res.ok) throw await readError(res)
+  const name = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') || '')?.[1] || fallbackName
+  const url = URL.createObjectURL(await res.blob())
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
 export const api = {
-  listProjects: () => apiFetch('/projects'),
-  createProject: (name) =>
-    apiFetch('/projects', { method: 'POST', body: JSON.stringify({ name }) }),
-  getProject: (id) => apiFetch(`/projects/${id}`),
-  renameProject: (id, name) =>
-    apiFetch(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
-  deleteProject: (id) => apiFetch(`/projects/${id}`, { method: 'DELETE' }),
+  hasSession: () => Boolean(currentToken()),
+  start: ensureToken,
 
-  listItems: (projectId) => apiFetch(`/projects/${projectId}/items`),
-  captureItem: (projectId, sourceUrl, title, categoryId) =>
-    apiFetch(`/projects/${projectId}/items`, {
-      method: 'POST',
-      body: JSON.stringify({ sourceUrl, title, categoryId }),
-    }),
-  deleteItem: (projectId, itemId) =>
-    apiFetch(`/projects/${projectId}/items/${itemId}`, { method: 'DELETE' }),
-  setItemCategory: (projectId, itemId, categoryId) =>
-    apiFetch(`/projects/${projectId}/items/${itemId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ categoryId }),
-    }),
-
-  // Uploads an image file (from a file picker, or a pasted screenshot handed
-  // in as a Blob) as a new board item. Can't reuse apiFetch here — it always
-  // sets Content-Type: application/json, but multipart/form-data needs the
-  // browser to set its own Content-Type (with the multipart boundary), so
-  // the token is attached manually and Content-Type is left for fetch to fill in.
-  uploadItem: async (projectId, file, categoryId) => {
-    const token = await getOrCreateToken();
-    const formData = new FormData();
-    formData.append('file', file);
-    if (categoryId) formData.append('categoryId', categoryId);
-    const res = await fetch(`${API_BASE}/projects/${projectId}/items/upload`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
-    });
-    if (res.status === 401) {
-      localStorage.removeItem(TOKEN_KEY);
-      throw new Error('Your session needed to be refreshed — please try that again.');
-    }
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || `Upload failed (${res.status})`);
-    }
-    return res.json();
-  },
-
-  // Per-project groupings (Design Inspiration, Post Ideas, etc.) — every
-  // project starts with a starter set (seeded server-side on creation) but
-  // the list is fully user-editable from here.
-  listCategories: (projectId) => apiFetch(`/projects/${projectId}/categories`),
-  createCategory: (projectId, name) =>
-    apiFetch(`/projects/${projectId}/categories`, { method: 'POST', body: JSON.stringify({ name }) }),
-  renameCategory: (projectId, categoryId, name) =>
-    apiFetch(`/projects/${projectId}/categories/${categoryId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ name }),
-    }),
-  deleteCategory: (projectId, categoryId) =>
-    apiFetch(`/projects/${projectId}/categories/${categoryId}`, { method: 'DELETE' }),
-
-  getWorkspace: (projectId) => apiFetch(`/projects/${projectId}/workspace`),
-  saveWorkspace: (projectId, content) =>
-    apiFetch(`/projects/${projectId}/workspace`, {
-      method: 'PUT',
-      body: JSON.stringify({ content }),
-    }),
-
-  // Generates a short-lived code the browser extension can redeem so it logs
-  // into this SAME account, instead of silently creating its own separate one.
-  getPairingCode: () => apiFetch('/auth/pairing-code', { method: 'POST' }),
-
-  // Whether the CURRENT account has an email on file. An anonymous account
-  // with no email has no recovery path at all if its token is ever lost.
-  getMe: () => apiFetch('/auth/me'),
-
-  // Attaches an email + password to the current (anonymous) account so it
-  // can survive a lost/cleared token or be recovered on another device.
-  claimAccount: (email, password) =>
-    apiFetch('/auth/claim', { method: 'POST', body: JSON.stringify({ email, password }) }),
-
-  // Recovers a previously-claimed account on this browser — deliberately
-  // bypasses the current token entirely rather than trying to attach to it.
+  // account
+  account: () => get('/account'),
+  updateAccount: (displayName) => patch('/account', { displayName }),
+  claim: (email, password) => post('/auth/claim', { email, password }),
   login: async (email, password) => {
-    const data = await rawFetch('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
-    localStorage.setItem(TOKEN_KEY, data.token);
-    return data;
+    const data = await request('/auth/login', { method: 'POST', body: { email, password }, auth: false })
+    session.set(data.token)
   },
-
-  // Always resolves with a generic message whether or not the email has an
-  // account (the server deliberately doesn't reveal which emails exist).
-  forgotPassword: (email) =>
-    rawFetch('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
-
-  // Redeems the emailed token, sets the new password, and logs this browser
-  // straight into that account.
+  forgotPassword: (email) => request('/auth/forgot-password', { method: 'POST', body: { email }, auth: false }),
   resetPassword: async (token, password) => {
-    const data = await rawFetch('/auth/reset-password', {
-      method: 'POST',
-      body: JSON.stringify({ token, password }),
-    });
-    localStorage.setItem(TOKEN_KEY, data.token);
-    return data;
+    const data = await request('/auth/reset-password', { method: 'POST', body: { token, password }, auth: false })
+    session.set(data.token)
   },
-};
+  changePassword: async (currentPassword, newPassword) => {
+    const data = await post('/account/password', { currentPassword, newPassword })
+    session.set(data.token)
+  },
+  logoutEverywhere: async () => {
+    const data = await post('/account/logout-all')
+    session.set(data.token)
+  },
+  logout: () => session.clear(),
+  deleteAccount: (password) => del('/account', { password, confirm: 'DELETE' }),
+  exportAccount: () => download('/account/export', 'moodloom-export.zip'),
+  pairingCode: () => post('/auth/pairing-code'),
+
+  // projects
+  projects: () => get('/projects'),
+  createProject: (name) => post('/projects', { name }),
+  project: (id) => get(`/projects/${id}`),
+  updateProject: (id, changes) => patch(`/projects/${id}`, changes),
+  deleteProject: (id) => del(`/projects/${id}`),
+  exportProject: (id) => download(`/projects/${id}/export`, 'moodloom-project.zip'),
+  search: (q) => get(`/search?q=${encodeURIComponent(q)}`),
+
+  // board
+  items: (pid) => get(`/projects/${pid}/items`),
+  capture: (pid, data) => post(`/projects/${pid}/items`, data),
+  upload: (pid, file, { categoryId, title, note } = {}) => {
+    const form = new FormData()
+    form.append('file', file, file.name || 'pasted-image.png')
+    if (categoryId) form.append('categoryId', String(categoryId))
+    if (title) form.append('title', title)
+    if (note) form.append('note', note)
+    return request(`/projects/${pid}/items/upload`, { method: 'POST', form })
+  },
+  addQuote: (pid, data) => post(`/projects/${pid}/items/quote`, data),
+  updateItem: (pid, id, changes) => patch(`/projects/${pid}/items/${id}`, changes),
+  deleteItem: (pid, id) => del(`/projects/${pid}/items/${id}`),
+  reorder: (pid, ids) => post(`/projects/${pid}/items/reorder`, { ids }),
+  similar: (pid, id) => get(`/projects/${pid}/items/${id}/similar`),
+
+  categories: (pid) => get(`/projects/${pid}/categories`),
+  createCategory: (pid, name, itemIds) => post(`/projects/${pid}/categories`, { name, itemIds }),
+  updateCategory: (pid, id, changes) => patch(`/projects/${pid}/categories/${id}`, changes),
+  deleteCategory: (pid, id) => del(`/projects/${pid}/categories/${id}`),
+
+  // notes, sketch, brand kit
+  notes: (pid) => get(`/projects/${pid}/workspace`),
+  saveNotes: (pid, content) => put(`/projects/${pid}/workspace`, { content }),
+  sketch: (pid) => get(`/projects/${pid}/canvas`),
+  saveSketch: (pid, scene) => put(`/projects/${pid}/canvas`, { scene }),
+  brand: (pid) => get(`/projects/${pid}/brand`),
+  saveBrand: (pid, data) => put(`/projects/${pid}/brand`, { data }),
+
+  // direction
+  aiStatus: (pid) => get(`/projects/${pid}/ai/status`),
+  digest: (pid, categoryId) => get(`/projects/${pid}/ai/digest${categoryId ? `?categoryId=${categoryId}` : ''}`),
+  groupings: (pid) => post(`/projects/${pid}/ai/groupings`),
+  suggestCategory: (pid, itemId) => get(`/projects/${pid}/ai/suggest-category?itemId=${itemId}`),
+  describeSearch: (pid, q) => get(`/projects/${pid}/ai/search?q=${encodeURIComponent(q)}`),
+  directionNotes: (pid) => get(`/projects/${pid}/ai/direction`),
+  writeDirection: (pid, data) => post(`/projects/${pid}/ai/direction`, data),
+  deleteDirection: (pid, id) => del(`/projects/${pid}/ai/direction/${id}`),
+
+  // sharing
+  shareLinks: (pid) => get(`/projects/${pid}/share-links`),
+  createShareLink: (pid, options) => post(`/projects/${pid}/share-links`, options),
+  updateShareLink: (pid, id, options) => patch(`/projects/${pid}/share-links/${id}`, options),
+  deleteShareLink: (pid, id) => del(`/projects/${pid}/share-links/${id}`),
+  members: (pid) => get(`/projects/${pid}/members`),
+  invite: (pid, role) => post(`/projects/${pid}/invites`, { role }),
+  deleteInvite: (pid, id) => del(`/projects/${pid}/invites/${id}`),
+  setMemberRole: (pid, userId, role) => patch(`/projects/${pid}/members/${userId}`, { role }),
+  removeMember: (pid, userId) => del(`/projects/${pid}/members/${userId}`),
+
+  // no account needed
+  shared: (token) => request(`/share/${token}`, { auth: false }),
+  invitePreview: (token) => request(`/invites/${token}`, { auth: false }),
+  acceptInvite: (token) => post(`/invites/${token}/accept`),
+}
