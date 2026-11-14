@@ -43,3 +43,7 @@ MVP: projects, fixed-grid then masonry board, browser extension with pairing cod
 - **First-run walkthrough:** four steps that point at the real controls the first time a board is opened; "Show me around" in the project menu brings it back.
 - **Comments on references**, with a count on each card. Anyone on a shared project can comment, including viewers.
 - **`npm run ai:eval-real`:** measures "more like this" on your own folder of labelled references and writes `docs/ai/RESULTS-REAL.md`.
+
+## 3.0.3 — 14 November 2026
+
+- Sketch: frames, placed references, rectangles and ellipses resize from their corners with the select tool; arrows from either end. References keep their proportions. A newly placed frame is selected straight away.

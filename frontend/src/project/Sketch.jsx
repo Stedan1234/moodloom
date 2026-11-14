@@ -138,6 +138,35 @@ const layerOf = (el) => (el.type === 'frame' ? 0 : el.type === 'image' ? 1 : 2)
 function drawAll(ctx, list, images) {
   for (let layer = 0; layer < 3; layer++) for (const el of list) if (layerOf(el) === layer) drawElement(ctx, el, images)
 }
+// Things with a box can be resized from their corners; an arrow from its two ends.
+const RESIZABLE = ['frame', 'image', 'rect', 'ellipse', 'arrow']
+function handlesOf(el) {
+  if (el.type === 'arrow') return [['start', el.x, el.y], ['end', el.x + el.w, el.y + el.h]]
+  const x0 = Math.min(el.x, el.x + el.w), x1 = Math.max(el.x, el.x + el.w)
+  const y0 = Math.min(el.y, el.y + el.h), y1 = Math.max(el.y, el.y + el.h)
+  return [['nw', x0, y0], ['ne', x1, y0], ['sw', x0, y1], ['se', x1, y1]]
+}
+function resized(el, corner, px, py) {
+  if (el.type === 'arrow') {
+    if (corner === 'start') return { ...el, x: px, y: py, w: el.x + el.w - px, h: el.y + el.h - py }
+    return { ...el, w: px - el.x, h: py - el.y }
+  }
+  const x0 = Math.min(el.x, el.x + el.w), x1 = Math.max(el.x, el.x + el.w)
+  const y0 = Math.min(el.y, el.y + el.h), y1 = Math.max(el.y, el.y + el.h)
+  // the corner opposite the one being dragged stays put
+  const ax = corner.includes('w') ? x1 : x0
+  const ay = corner.includes('n') ? y1 : y0
+  let w = Math.max(12, Math.abs(px - ax))
+  let h = Math.max(12, Math.abs(py - ay))
+  if (el.type === 'image') {
+    // a reference keeps its proportions
+    const ratio = Math.abs(el.w / el.h) || 1
+    if (w / h > ratio) h = w / ratio
+    else w = h * ratio
+  }
+  const round = el.type === 'frame' ? Math.round : (v) => v
+  return { ...el, x: round(px < ax ? ax - w : ax), y: round(py < ay ? ay - h : ay), w: round(w), h: round(h) }
+}
 function moveBy(el, dx, dy) {
   if (el.type === 'stroke') return { ...el, points: el.points.map(([x, y, p]) => [x + dx, y + dy, p]) }
   return { ...el, x: el.x + dx, y: el.y + dy }
@@ -208,6 +237,15 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
         ctx.setLineDash([7 / zoom, 5 / zoom])
         ctx.strokeRect(b.x - 4 / zoom, b.y - 4 / zoom, b.w + 8 / zoom, b.h + 8 / zoom)
         ctx.setLineDash([])
+        if (RESIZABLE.includes(picked.type)) {
+          const r = 5 / zoom
+          ctx.fillStyle = '#fcfcfa'
+          ctx.lineWidth = 2 / zoom
+          for (const [, hx, hy] of handlesOf(picked)) {
+            ctx.fillRect(hx - r, hy - r, r * 2, r * 2)
+            ctx.strokeRect(hx - r, hy - r, r * 2, r * 2)
+          }
+        }
       }
     })
   }, [])
@@ -369,10 +407,23 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
       drawing.current = { id: uid(), type: tool, x: px, y: py, w: 0, h: 0, color, size }
     } else if (tool === 'frame') {
       const [name, w, h] = FRAMES[framePreset]
-      elements.current = [...elements.current, { id: uid(), type: 'frame', name, x: Math.round(px - w / 2), y: Math.round(py - h / 2), w, h }]
+      const frame = { id: uid(), type: 'frame', name, x: Math.round(px - w / 2), y: Math.round(py - h / 2), w, h }
+      elements.current = [...elements.current, frame]
+      selected.current = frame.id
+      setTool('select')
       changed()
     } else if (tool === 'select') {
       const ctx = canvasRef.current.getContext('2d')
+      // A corner of what's already selected takes priority over picking something else.
+      const current = selected.current && elements.current.find((el) => el.id === selected.current)
+      if (current && RESIZABLE.includes(current.type)) {
+        const reach = 9 / view.current.zoom
+        const grabbed = handlesOf(current).find(([, hx, hy]) => Math.abs(px - hx) <= reach && Math.abs(py - hy) <= reach)
+        if (grabbed) {
+          moving.current = { id: current.id, corner: grabbed[0], original: current, moved: false }
+          return
+        }
+      }
       // topmost first: later layers, then later elements
       const hit = [...elements.current]
         .sort((a, b) => layerOf(b) - layerOf(a) || elements.current.indexOf(b) - elements.current.indexOf(a))
@@ -406,7 +457,7 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
     if (moving.current) {
       const m = moving.current
       m.moved = true
-      const next = moveBy(m.original, px - m.sx, py - m.sy)
+      const next = m.corner ? resized(m.original, m.corner, px, py) : moveBy(m.original, px - m.sx, py - m.sy)
       elements.current = elements.current.map((el) => (el.id === m.id ? next : el))
       return render()
     }
@@ -600,7 +651,7 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
   }
 
   const tools = [
-    ['select', MousePointer2, 'Select and move (V). Delete removes.'],
+    ['select', MousePointer2, 'Select, move and resize (V). Drag a corner to resize; Delete removes.'],
     ['pen', PenLine, 'Pen (P)'],
     ['marker', Highlighter, 'Marker (M)'],
     ['eraser', Eraser, 'Eraser (E)'],
@@ -652,7 +703,7 @@ export default function Sketch({ projectId, items, canEdit, loadItems }) {
             </div>
             {tool === 'frame' && (
               <div className="sheet p-1.5 pointer-events-auto text-sm" role="group" aria-label="Frame size">
-                <p className="text-xs text-mute px-1 pb-1">Click the paper to place</p>
+                <p className="text-xs text-mute px-1 pb-1 max-w-36">Click the paper to place. Resize it with the arrow tool.</p>
                 {FRAMES.map(([name, w, h], i) => (
                   <button key={name} onClick={() => setFramePreset(i)} aria-pressed={framePreset === i} className={`block w-full text-left px-2 py-1 rounded-md ${framePreset === i ? 'bg-weld' : 'hover:bg-ink/7'}`}>
                     {name} <span className="text-xs opacity-70">{w}×{h}</span>
